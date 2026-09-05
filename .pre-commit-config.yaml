@@ -1,0 +1,68 @@
+# ============================================================================
+# Pre-commit hooks: the first line of the security pipeline.
+#
+# These run on `git commit`, BEFORE anything reaches a remote. That ordering is
+# the whole point: a secret pushed to GitHub and then deleted is still a leaked
+# secret - it lives in the reflog, in forks, and in every scraper that indexes
+# public commits within minutes. The only reliable place to stop it is here.
+#
+# Install once:  pre-commit install
+# Run manually:  pre-commit run --all-files
+# ============================================================================
+
+default_language_version:
+  python: python3
+
+repos:
+  # --- Universal hygiene ----------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict          # Windows/Linux filename collisions
+      - id: mixed-line-ending
+        args: [--fix=lf]                 # LF everywhere; Git handles checkout
+      - id: check-added-large-files
+        args: [--maxkb=1024]             # data files must never be committed
+      - id: detect-private-key           # blocks PEM keys outright
+
+  # --- Python lint + format (one fast Rust tool replaces four) --------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # --- Secret scanning ------------------------------------------------------
+  # detect-secrets uses a baseline file: known-safe matches (like the sample
+  # credentials in .env.example) are recorded once and never nag again, while
+  # anything NEW must be explicitly reviewed. That is what makes a scanner
+  # survivable rather than something the team learns to bypass with --no-verify.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: (?x)^(
+            \.secrets\.baseline|
+            .*\.lock|
+            docs/.*
+          )$
+
+  # --- Infrastructure-as-code security -------------------------------------
+  # Checkov statically analyses Docker Compose, Dockerfiles and (from Phase 9)
+  # Terraform for insecure configuration: privileged containers, world-open
+  # security groups, unencrypted buckets.
+  - repo: https://github.com/bridgecrewio/checkov
+    rev: 3.2.334
+    hooks:
+      - id: checkov
+        args: [--quiet, --compact, --framework, dockerfile, docker_compose]
+        files: ^infra/

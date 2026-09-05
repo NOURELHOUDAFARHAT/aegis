@@ -1,0 +1,29 @@
+# ============================================================================
+# Normalise line endings.
+#
+# Without this, a file authored on Windows (CRLF) and consumed by a Linux
+# container fails in confusing ways: shell scripts report "bad interpreter",
+# and Docker entrypoints silently break. Git stores LF in the repository and
+# checks out whatever the platform wants - except for the files below, which
+# must stay LF everywhere because they are executed inside Linux containers.
+# ============================================================================
+
+* text=auto eol=lf
+
+# Executed by Linux: LF is mandatory
+*.sh              text eol=lf
+*.sql             text eol=lf
+Dockerfile        text eol=lf
+Makefile          text eol=lf
+*.yml             text eol=lf
+*.yaml            text eol=lf
+
+# Executed by Windows PowerShell: CRLF is safe and conventional
+*.ps1             text eol=crlf
+
+# Binary: never touch
+*.png             binary
+*.jpg             binary
+*.parquet         binary
+*.duckdb          binary
+*.avro            binary

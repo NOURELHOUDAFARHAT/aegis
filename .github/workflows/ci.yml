@@ -1,0 +1,135 @@
+# ============================================================================
+# AEGIS - Continuous Integration
+#
+# Runs on every push and pull request. The job order is deliberate: the cheap,
+# fast checks run first and fail fast, so a formatting error does not wait for
+# a five-minute integration suite to tell you about it.
+#
+#   quality      (~40s)  lint, format check, type check, unit tests
+#   security     (~60s)  secret scan, dependency audit, IaC scan
+#   integration  (~3m)   the real infrastructure, exercised end to end
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel a superseded run when new commits land on the same branch: saves CI
+# minutes and gets feedback on the latest code faster.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+permissions:
+  contents: read          # least privilege: CI only needs to read the code
+
+jobs:
+  quality:
+    name: Code quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src tests --output-format=github
+
+      - name: Format check (ruff)
+        run: ruff format --check src tests
+
+      - name: Type check (mypy)
+        run: mypy src
+
+      - name: Unit tests
+        run: pytest tests -v --cov=aegis --cov-report=term-missing -m "not integration"
+
+  security:
+    name: Security scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # gitleaks needs full history to scan every commit
+
+      # Secrets that were committed at ANY point in history, not just the diff.
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Known CVEs in our own dependency tree. A data platform's largest
+      # attack surface is usually the 400 transitive packages it installed.
+      - name: Dependency audit (pip-audit)
+        run: |
+          pip install pip-audit
+          pip install -e .
+          pip-audit --strict --desc
+
+      # Insecure infrastructure configuration, caught before it is deployed.
+      - name: IaC scan (Checkov)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: infra/
+          framework: dockerfile,docker_compose
+          soft_fail: true       # Phase 0: report only. Phase 8 turns this hard.
+          output_format: cli
+
+  integration:
+    name: Integration (real infrastructure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [quality]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Start infrastructure
+        run: |
+          cp .env.example .env
+          docker compose --env-file .env -f infra/docker-compose.yml up -d --wait
+
+      - name: Environment diagnostics
+        run: python scripts/doctor.py
+
+      - name: Integration tests
+        run: pytest tests -v -m integration
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose --env-file .env -f infra/docker-compose.yml logs --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose --env-file .env -f infra/docker-compose.yml down -v

@@ -1,0 +1,123 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis"
+version = "0.1.0"
+description = "AEGIS - a JVM-free threat-intelligence lakehouse: streaming ingestion, Iceberg, dbt, ML and RAG over live attack telemetry."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Nourelhouda Farhat" }]
+
+# ---------------------------------------------------------------------------
+# Runtime dependencies, grouped by the phase that introduces them so you can
+# see the project's dependency history at a glance. All are pinned with `~=`
+# (compatible release): patch/minor updates allowed, majors blocked.
+# ---------------------------------------------------------------------------
+dependencies = [
+    # -- Phase 0: configuration & observability --------------------------------
+    "pydantic~=2.9",              # runtime data validation = our schema contract
+    "pydantic-settings~=2.6",     # 12-factor config: env vars -> typed objects
+    "structlog~=24.4",            # structured JSON logs (parseable, not printf)
+    "python-dotenv~=1.0",
+    "typer~=0.15",                # the `aegis` CLI
+    "rich~=13.9",                 # readable terminal output
+
+    # -- Phase 1: source collection -------------------------------------------
+    "httpx~=0.27",                # async HTTP client for the threat feeds
+    "tenacity~=9.0",              # retry with exponential backoff + jitter
+    "psycopg[binary]~=3.2",       # Postgres driver (watermarks, ops tables)
+
+    # -- Phase 2: streaming ----------------------------------------------------
+    "confluent-kafka~=2.6",       # librdkafka bindings: the production client
+    "fastavro~=1.9",              # Avro serialisation for Schema Registry
+
+    # -- Phase 3/4: lakehouse & analytics -------------------------------------
+    # Iceberg WITHOUT a JVM. Note the extras we deliberately DO NOT install:
+    # `s3fs` drags in aiobotocore, which pins botocore so tightly that pip
+    # backtracks through thousands of botocore releases and appears to hang.
+    # PyIceberg reaches S3 through PyArrow's own S3FileSystem instead, which
+    # is faster anyway (C++, no Python async layer).
+    "pyiceberg[sql-postgres,pyarrow]~=0.8",
+    "pyarrow~=18.0",              # columnar in-memory format; Parquet writer
+    "duckdb~=1.1",                # embedded OLAP engine = our query layer
+    "polars~=1.15",               # fast DataFrames; the pandas we actually want
+    "sqlalchemy~=2.0",            # required by pyiceberg's SqlCatalog
+]
+
+[project.optional-dependencies]
+# Installed later, phase by phase, to keep the first setup fast and small.
+orchestration = ["dagster~=1.9", "dagster-webserver~=1.9", "dagster-duckdb~=0.25"]
+quality       = ["dbt-core~=1.8", "dbt-duckdb~=1.8", "great-expectations~=1.2"]
+ml            = ["scikit-learn~=1.5", "mlflow~=2.18", "sentence-transformers~=3.3", "lancedb~=0.17"]
+api           = ["fastapi~=0.115", "uvicorn[standard]~=0.32", "websockets~=13.1"]
+dev = [
+    "pytest~=8.3",
+    "pytest-cov~=6.0",
+    "ruff~=0.8",                  # linter + formatter, replaces flake8+black+isort
+    "mypy~=1.13",
+    "pre-commit~=4.0",
+    "detect-secrets~=1.5",        # blocks credentials from reaching a commit
+]
+
+[project.scripts]
+aegis = "aegis.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------------------
+# Ruff: one tool for linting AND formatting. Fast (Rust), zero config drift.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes: real bugs (unused vars, undefined names)
+    "I",        # isort: import ordering
+    "B",        # bugbear: likely-wrong patterns
+    "UP",       # pyupgrade: modernise syntax
+    "S",        # bandit: SECURITY lint - hardcoded passwords, unsafe subprocess
+    "C4",       # comprehension simplification
+    "DTZ",      # naive-datetime detection (a classic data-pipeline bug source)
+    "RUF",
+]
+ignore = ["E501"]  # line length is handled by the formatter
+
+[tool.ruff.lint.per-file-ignores]
+# Each suppression below is deliberate and justified. A blanket ignore would
+# hide real findings; these name the exact rule and the exact file.
+"tests/**" = [
+    "S101",  # `assert` is the entire mechanism of a test
+    "S105",  # "hardcoded password": these are fake fixtures, not credentials
+    "S106",  # same, passed as a keyword argument
+]
+"scripts/explore.py" = [
+    # S608 flags SQL built by string formatting. Here the only interpolated
+    # value is a file path from our own validated settings object - it never
+    # comes from user input, and DuckDB's read_json_auto() takes a path
+    # literal that cannot be supplied as a bound parameter. Real user input
+    # in later phases WILL use parameter binding.
+    "S608",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires the docker infrastructure to be running",
+    "slow: takes more than a second",
+]

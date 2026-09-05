@@ -1,0 +1,47 @@
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# --- Secrets & config ---
+.env
+.env.local
+*.pem
+*.key
+secrets/
+
+# --- Data (must NEVER be committed) ---
+data/
+warehouse/
+*.parquet
+*.duckdb
+*.duckdb.wal
+logs/
+
+# --- dbt ---
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# --- Node / web ---
+node_modules/
+.next/
+out/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- ML ---
+mlruns/
+*.pkl
+*.joblib
