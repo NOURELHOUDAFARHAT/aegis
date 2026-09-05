@@ -31,8 +31,11 @@ dependencies = [
     "psycopg[binary]~=3.2",       # Postgres driver (watermarks, ops tables)
 
     # -- Phase 2: streaming ----------------------------------------------------
-    "confluent-kafka~=2.6",       # librdkafka bindings: the production client
-    "fastavro~=1.9",              # Avro serialisation for Schema Registry
+    # The [schemaregistry,avro] extras pull in the Schema Registry client and
+    # the Avro serialisers. Without them `confluent_kafka.schema_registry`
+    # fails to import with a confusing "No module named 'authlib'".
+    "confluent-kafka[schemaregistry,avro]~=2.6",
+    "fastavro~=1.9",              # fast Avro encode/decode
 
     # -- Phase 3/4: lakehouse & analytics -------------------------------------
     # Iceberg WITHOUT a JVM. Note the extras we deliberately DO NOT install:
@@ -97,6 +100,14 @@ ignore = ["E501"]  # line length is handled by the formatter
     "S101",  # `assert` is the entire mechanism of a test
     "S105",  # "hardcoded password": these are fake fixtures, not credentials
     "S106",  # same, passed as a keyword argument
+]
+"src/aegis/cli.py" = [
+    # B008 forbids a function call in an argument default. Typer REQUIRES it:
+    # `typer.Option(...)` as a default is how the framework learns the flag
+    # name, help text and type. This is the documented Typer/FastAPI idiom,
+    # and the usual reason for the rule (a shared mutable default) does not
+    # apply, because Typer replaces the value before the function ever runs.
+    "B008",
 ]
 "scripts/explore.py" = [
     # S608 flags SQL built by string formatting. Here the only interpolated

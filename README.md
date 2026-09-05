@@ -135,6 +135,7 @@ Then open:
 | Service | URL | What it shows |
 |---|---|---|
 | Redpanda Console | http://localhost:8080 | Topics, live messages, consumer lag, schemas |
+| Schema Registry | http://localhost:18081/subjects | The registered data contracts |
 | MinIO Console | http://localhost:9001 | The lakehouse files as they are written |
 
 All task-runner commands: `.\aegis.ps1 help`
@@ -171,6 +172,38 @@ That last one is a question no single feed can answer. It only became askable
 once two sources shared one queryable place — which is the entire argument for
 building a lakehouse.
 
+### Stream it instead
+
+The same collectors publish to Kafka without a single line of collector code
+changing — the destination is a `Sink`, and Kafka is just another implementation:
+
+```powershell
+aegis topics create                        # declare topics + set FULL compatibility
+aegis collect all --to kafka               # ~18,000 events, Avro-encoded
+aegis topics list                          # partitions, retention, message counts
+aegis tail aegis.raw.feodo --limit 3       # read messages back
+aegis lag --group aegis-bronze-writer      # how far behind a consumer is
+python scripts/demo_contracts.py           # prove the schema contract + DLQ work
+```
+
+Messages are Avro-encoded against a schema in the Schema Registry, keyed by the
+**entity** the event describes (the URL, the IP, the CVE) rather than by source.
+That choice is what produces this:
+
+| Partition | Messages |
+|---|---:|
+| 0 | 4,922 |
+| 1 | 5,099 |
+| 2 | 5,056 |
+
+Keying by source instead would have put all 15,077 records on one partition and
+left the other two empty — parallelism that exists on paper only.
+
+`scripts/demo_contracts.py` proves, against the running system, that a breaking
+schema change is refused, a safe one is accepted, and a record that cannot be
+serialised lands in the dead-letter topic with its cause attached while the
+pipeline keeps running.
+
 ## Project layout
 
 ```
@@ -202,8 +235,8 @@ aegis/
 |---|---|---|
 | **0** | Foundations: infra, config, logging, quality gates | 🟢 **Done** |
 | **1** | Sources: 4 live threat feeds, envelope, sinks, watermarks | 🟢 **Done** |
-| 2 | Streaming: Kafka producers, schemas, partitioning, DLQ | ⚪ Next |
-| 3 | Lakehouse: Iceberg bronze, time travel, compaction | ⚪ |
+| **2** | Streaming: Kafka, Avro schemas, partitioning, DLQ | 🟢 **Done** |
+| 3 | Lakehouse: Iceberg bronze, time travel, compaction | ⚪ Next |
 | 4 | Modelling: dbt silver/gold, data quality, contracts | ⚪ |
 | 5 | Orchestration: Dagster assets, backfills, freshness SLAs | ⚪ |
 | 6 | AI: anomaly detection, clustering, MLflow, RAG assistant | ⚪ |

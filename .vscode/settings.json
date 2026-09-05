@@ -1,0 +1,46 @@
+{
+  // ---------------------------------------------------------------------------
+  // AEGIS - editor settings, committed on purpose.
+  //
+  // The venv lives OUTSIDE this folder (see aegis.ps1 for why: OneDrive must not
+  // sync 400 MB of wheels). VS Code cannot discover it automatically, so without
+  // this file every import shows as "not installed" and autocomplete is dead.
+  //
+  // If you cloned this on another machine, change the two paths below or set
+  // them via: Ctrl+Shift+P -> "Python: Select Interpreter".
+  // ---------------------------------------------------------------------------
+  "python.defaultInterpreterPath": "C:\\aegis-data\\venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+
+  // Ruff is both our linter and our formatter, so nothing else should format.
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.extraPaths": ["./src"],
+
+  // These directories are large, generated, or irrelevant - hiding them keeps
+  // search results and the file tree focused on actual source code.
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "**/.mypy_cache": true,
+    "**/*.egg-info": true
+  },
+  "search.exclude": {
+    "**/data": true,
+    "**/dbt/target": true
+  },
+
+  "files.eol": "\n",
+  "editor.rulers": [100]
+}
