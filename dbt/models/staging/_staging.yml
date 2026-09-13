@@ -1,0 +1,67 @@
+version: 2
+
+# Staging models are one-to-one with Bronze: no filtering, no deduplication.
+#
+# WHY event_id UNIQUENESS IS A WARNING HERE, NOT AN ERROR
+# -------------------------------------------------------
+# The first version made `unique` on event_id a hard failure, on the reasoning
+# that every event gets a fresh UUID. The build then failed on three duplicated
+# IDs in bronze.feodo - and the data was right; the test was wrong.
+#
+# Bronze is written at-least-once. If the Bronze writer crashes after an
+# Iceberg commit but before the Kafka offset commit, the next run re-reads and
+# re-writes those messages: same event_id, new Bronze row. That is the design,
+# documented in lakehouse/writer.py. A hard uniqueness rule in staging would
+# turn every normal crash-recovery into a failed build.
+#
+# (The three duplicates that surfaced this were not crash redeliveries: the
+# demo script published one fake event object twice per run. Each copy has its
+# own Kafka offset - genuinely two messages - so the pipeline stored exactly
+# what arrived.)
+#
+# So duplicates are VISIBLE here as warnings - a sudden jump is worth
+# investigating - and uniqueness is ENFORCED in Silver, on each table's natural
+# key, which is where "one row per real thing" is actually promised.
+
+models:
+  - name: stg_cisa_kev
+    description: CISA KEV records with the JSON payload unpacked into typed columns.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                severity: warn
+      - name: cve_id
+        description: Repeats once per collection run - deduplicated in silver.
+
+  - name: stg_urlhaus
+    description: URLhaus records unpacked, with the host extracted from the URL.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                severity: warn
+
+  - name: stg_feodo
+    description: Feodo Tracker records unpacked. Includes test records - filtered in silver.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                severity: warn
+
+  - name: stg_tor_exit
+    description: One row per IP per Tor-list collection run.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                severity: warn

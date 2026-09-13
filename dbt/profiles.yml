@@ -1,0 +1,41 @@
+# ============================================================================
+# AEGIS - dbt connection profile
+#
+# Committed to git on purpose, because it contains NO secrets: every sensitive
+# value is read with env_var(). The `aegis model` command sets those variables
+# from aegis.config before invoking dbt, so there is exactly one place that
+# knows the credentials - the same typed settings object the rest of the
+# platform uses.
+#
+# Running plain `dbt build` without the wrapper fails fast on the missing
+# env_var() calls rather than connecting with wrong defaults. That is intended.
+# ============================================================================
+
+aegis:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      # The warehouse file: where Silver and Gold tables live. Outside OneDrive
+      # for the same reason as the venv and the collected data.
+      path: "{{ env_var('AEGIS_WAREHOUSE_PATH') }}"
+      # Two threads: this laptop has 6 cores, but DuckDB already parallelises
+      # inside each query. More dbt threads mostly means more memory pressure.
+      threads: 2
+      extensions:
+        - json
+
+      plugins:
+        # The Iceberg plugin reads Bronze straight from the lakehouse through
+        # PyIceberg - the same catalog, the same MinIO bucket, no export step.
+        # Everything except `catalog` is handed to pyiceberg's load_catalog().
+        - module: iceberg
+          config:
+            catalog: aegis
+            type: sql
+            uri: "{{ env_var('AEGIS_CATALOG_URI') }}"
+            warehouse: "s3://{{ env_var('AEGIS_LAKE_BUCKET') }}/"
+            s3.endpoint: "{{ env_var('AEGIS_S3_ENDPOINT') }}"
+            s3.access-key-id: "{{ env_var('AEGIS_S3_ACCESS_KEY') }}"
+            s3.secret-access-key: "{{ env_var('AEGIS_S3_SECRET_KEY') }}"
+            s3.region: "{{ env_var('AEGIS_S3_REGION') }}"

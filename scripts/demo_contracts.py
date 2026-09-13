@@ -140,9 +140,20 @@ def demo_dead_letter_queue() -> None:
     )
 
     print("  Sending 3 records: good, BAD, good\n")
+    # Two DISTINCT good events, not the same object written twice. An earlier
+    # version reused `good`, which published one event_id at two Kafka offsets
+    # every run - indistinguishable, downstream, from a genuine at-least-once
+    # redelivery. Phase 4's staging tests flagged those duplicates in
+    # bronze.feodo, and the investigation traced them here.
+    good_again = Event(
+        source=Source.FEODO,
+        event_type=EventType.IOC_IP,
+        occurred_at=utc_now(),
+        payload={"ip_address": "203.0.113.11", "malware": "DemoBot"},
+    )
     sink.write(good)
     sink.write(bad)
-    sink.write(good)
+    sink.write(good_again)
     sink.close()
 
     print()

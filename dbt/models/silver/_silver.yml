@@ -1,0 +1,72 @@
+version: 2
+
+# Silver's contract: one row per real-world thing, typed and validated.
+# Every model's grain is asserted with `unique` on its natural key. If a
+# deduplication rule ever breaks, the build stops here - before Gold publishes
+# numbers built on duplicates.
+
+models:
+  - name: kev_vulnerabilities
+    description: >
+      One row per actively-exploited CVE, deduplicated from every CISA KEV
+      collection run by keeping the most recently ingested copy.
+    columns:
+      - name: cve_id
+        description: The CVE identifier, e.g. CVE-2026-1234. The grain of this table.
+        data_tests: [unique, not_null]
+      - name: vendor
+        data_tests: [not_null]
+      - name: date_added
+        description: When CISA added it to the catalogue. NULL would mean the date failed to parse.
+        data_tests: [not_null]
+      - name: is_ransomware_linked
+        description: TRUE when CISA marks known use in ransomware campaigns.
+        data_tests: [not_null]
+      - name: times_observed
+        description: How many collection runs have included this CVE.
+
+  - name: urlhaus_urls
+    description: One row per malicious URL, carrying its latest reported status.
+    columns:
+      - name: url
+        data_tests: [unique, not_null]
+      - name: host
+        description: The server hosting the URL - what a firewall blocks.
+        data_tests: [not_null]
+      - name: url_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["online", "offline"]
+
+  - name: tor_exit_nodes
+    description: One row per IP ever seen in a Tor exit-list snapshot.
+    columns:
+      - name: ip_address
+        data_tests: [unique, not_null]
+      - name: is_current_exit
+        description: >
+          TRUE only if the IP appears in the most recent snapshot. An address
+          that has left the list may since belong to someone else.
+        data_tests: [not_null]
+
+  - name: feodo_c2_servers
+    description: >
+      One row per real botnet C2 server. Excludes RFC 5737 documentation
+      addresses that tests and demos wrote into Bronze.
+    columns:
+      - name: ip_address
+        data_tests: [unique, not_null]
+      - name: status
+        description: >
+          Every genuine Feodo record carries a status. The test records that
+          leaked into Bronze did not - so if this test ever fails, the
+          documentation-address filter has stopped catching something.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["online", "offline"]
+      - name: malware
+        data_tests: [not_null]

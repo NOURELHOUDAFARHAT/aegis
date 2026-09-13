@@ -1,0 +1,70 @@
+# ============================================================================
+# AEGIS - dbt project
+#
+# dbt turns a folder of SELECT statements into a pipeline. You write the query
+# that produces a table; dbt works out the order to build them in (from the
+# ref() and source() calls), creates the tables, runs the data tests, and draws
+# the lineage graph. It never moves data itself - every model runs as SQL
+# inside DuckDB.
+#
+# The three folders mirror the medallion layers:
+#   staging/  one view per Bronze table: unpack the JSON, fix the types
+#   silver/   one row per real-world thing: deduplicated, validated
+#   gold/     one table per question the dashboard asks
+# ============================================================================
+
+name: aegis
+version: "0.4.0"
+config-version: 2
+profile: aegis
+
+# ----------------------------------------------------------------------------
+# Create the schema the Iceberg sources load into BEFORE any model runs.
+#
+# Without this, the first build failed with:
+#   "Catalog write-write conflict on create with 'bronze'"
+#
+# dbt runs two threads. The Iceberg plugin materialises each Bronze source into
+# DuckDB on first use, and each load issues its own CREATE SCHEMA bronze. Two
+# sources loading at the same instant raced to create the same schema; DuckDB's
+# optimistic concurrency let one win and aborted the other. Which model lost
+# depended on timing, so it was stg_feodo this time and could be any of them
+# the next.
+#
+# Creating the schema once, up front, removes the shared write entirely while
+# keeping both threads. The alternative - threads: 1 - also works, but fixes a
+# race by removing concurrency instead of removing the conflict.
+# ----------------------------------------------------------------------------
+on-run-start:
+  - "create schema if not exists bronze"
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  aegis:
+    staging:
+      # Views, not tables. Staging only renames and casts, so storing a copy
+      # would double the data for no benefit - and a view always reflects the
+      # current Bronze, which is exactly what the next layer wants to read.
+      +materialized: view
+      +schema: staging
+    silver:
+      # Tables. Deduplicating 21,841 rows is cheap, but Gold reads Silver many
+      # times per build; materialising once avoids recomputing the window
+      # functions for every Gold model.
+      +materialized: table
+      +schema: silver
+    gold:
+      +materialized: table
+      +schema: gold
+
+tests:
+  aegis:
+    # A failing data test stops the build. That is the point: a Gold table
+    # built on Silver that just failed its uniqueness test would publish wrong
+    # numbers with total confidence.
+    +severity: error

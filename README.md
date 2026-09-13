@@ -238,6 +238,46 @@ Both rules exist because this project broke them first - see
 `docs/adr/0005-kafka-timestamps-are-ingestion-time.md`, which cost 45,233
 records.
 
+### Model it: Silver and Gold
+
+```powershell
+aegis model build                          # every model + every data test, in order
+aegis model show gold.vendor_exploitation  # read a Gold table
+aegis model sql "SELECT * FROM gold.c2_infrastructure"
+aegis model docs                           # dbt docs site with the lineage graph
+```
+
+dbt reads Bronze straight from the Iceberg catalog and builds three layers in a
+DuckDB warehouse — **12 models and 49 checks in about 6 seconds**:
+
+| Silver table | Bronze rows | Silver rows | What collapsed |
+|---|---:|---:|---|
+| `kev_vulnerabilities` | 5,085 | **1,695** | three collections of the same catalogue |
+| `tor_exit_nodes` | 4,017 | **1,339** | three snapshots of the same list |
+| `feodo_c2_servers` | 29 | **5** | repeats, plus test records that leaked in |
+| `urlhaus_urls` | 12,710 | 12,710 | one collection since the retention fix |
+
+The naive Bronze count said Microsoft had 1,158 exploited vulnerabilities.
+Silver says **386** — and a reconciliation test proves Silver holds exactly one
+row for every distinct CVE in Bronze, so the number is not just unique but
+complete.
+
+What the Gold layer shows:
+
+- **Botnet C2 servers are not hiding behind Tor.** None of the 5 is a Tor exit;
+  4 of 5 are rented from DigitalOcean or Amazon. That is the first answer in
+  AEGIS that required joining two sources.
+- **URL counts mislead without host counts.** Mozi has 5,088 URLs across
+  3,003 hosts (1.7 per host) — too distributed to block by address. `ua-wget`
+  concentrates 2,940 URLs on just 328 hosts (9.0 per host).
+- **Ransomware exposure is uneven.** 29.8% of Microsoft's exploited CVEs are
+  ransomware-linked; Apple's and Google's are 0%.
+
+The first build found three problems worth reading about in
+`docs/adr/0006-silver-gold-with-dbt-in-a-duckdb-warehouse.md`: a concurrency
+race in dbt's source loading, test records that had leaked into production
+tables, and a uniqueness test that asserted the wrong invariant.
+
 ## Project layout
 
 ```
@@ -271,8 +311,8 @@ aegis/
 | **1** | Sources: 4 live threat feeds, envelope, sinks, watermarks | 🟢 **Done** |
 | **2** | Streaming: Kafka, Avro schemas, partitioning, DLQ | 🟢 **Done** |
 | **3** | Lakehouse: Iceberg Bronze, time travel, partitioning | 🟢 **Done** |
-| 4 | Modelling: dbt Silver/Gold, data quality, contracts | ⚪ Next |
-| 5 | Orchestration: Dagster assets, backfills, freshness SLAs | ⚪ |
+| **4** | Modelling: dbt Silver/Gold, data tests, reconciliation | 🟢 **Done** |
+| 5 | Orchestration: Dagster assets, backfills, freshness SLAs | ⚪ Next |
 | 6 | AI: anomaly detection, clustering, MLflow, RAG assistant | ⚪ |
 | 7 | Product: FastAPI + Next.js real-time dashboard | ⚪ |
 | 8 | Security & governance: PII redaction, RBAC, SAST, audit | ⚪ |

@@ -669,5 +669,115 @@ def lake_sql(
         raise typer.Exit(code=1) from exc
 
 
+# ===========================================================================
+# Phase 4 - modelling commands (dbt: Silver and Gold)
+# ===========================================================================
+
+model_app = typer.Typer(help="Build and query Silver and Gold with dbt.", no_args_is_help=True)
+app.add_typer(model_app, name="model")
+
+# Only these layers can be named from the command line. Validating the table
+# identifier against a pattern - rather than pasting user input into SQL - is
+# the difference between a query tool and an injection vector.
+_TABLE_NAME = r"^(staging|silver|gold)\.[a-z][a-z0-9_]*$"
+
+
+@model_app.command("build")
+def model_build(
+    select: str | None = typer.Option(
+        None, "--select", "-s", help="dbt selector, e.g. 'silver' or 'gold.c2_infrastructure+'."
+    ),
+) -> None:
+    """Build every model and run every data test, in dependency order.
+
+    `dbt build` interleaves them: a model's tests run right after the model is
+    built, and a failing test stops everything downstream of it. So a broken
+    Silver table can never feed a Gold table.
+    """
+    from aegis.modeling.dbt_runner import run_dbt
+
+    args = ["build"]
+    if select:
+        args += ["--select", select]
+    if not run_dbt(args):
+        console.print("[red]dbt build failed - see the output above.[/]")
+        raise typer.Exit(code=1)
+    console.print("[green]All models built and all data tests passed.[/]")
+
+
+@model_app.command("test")
+def model_test() -> None:
+    """Run the data tests only, against the tables that already exist."""
+    from aegis.modeling.dbt_runner import run_dbt
+
+    if not run_dbt(["test"]):
+        raise typer.Exit(code=1)
+
+
+@model_app.command("docs")
+def model_docs() -> None:
+    """Generate dbt's documentation site, including the lineage graph."""
+    from aegis.modeling.dbt_runner import DBT_DIR, run_dbt
+
+    if not run_dbt(["docs", "generate"]):
+        raise typer.Exit(code=1)
+    console.print(f"Docs written to [cyan]{DBT_DIR / 'target' / 'index.html'}[/]")
+    console.print("Serve them with:  [dim]cd dbt; dbt docs serve --port 8089[/]")
+
+
+@model_app.command("show")
+def model_show(
+    table: str = typer.Argument(..., help="e.g. gold.vendor_exploitation"),
+    limit: int = typer.Option(15, "--limit", "-n"),
+) -> None:
+    """Print rows from a Silver or Gold table."""
+    import re
+
+    if not re.match(_TABLE_NAME, table):
+        console.print("[red]Table must look like silver.name or gold.name.[/]")
+        raise typer.Exit(code=1)
+    # S608 is suppressed on this line only, deliberately. SQL identifiers such
+    # as table names cannot be passed as bound parameters, so the defence is
+    # validation, not binding: `table` has just been matched against
+    # _TABLE_NAME (a fixed layer prefix and [a-z0-9_] only) and `limit` is cast
+    # to int. tests/test_modeling.py proves the pattern rejects injection input.
+    _warehouse_query(f"SELECT * FROM {table} LIMIT {int(limit)}")  # noqa: S608
+
+
+@model_app.command("sql")
+def model_sql(query: str = typer.Argument(..., help="SQL against the warehouse.")) -> None:
+    """Run ad-hoc SQL against Silver and Gold (read-only)."""
+    _warehouse_query(query)
+
+
+def _warehouse_query(query: str) -> None:
+    """Run a query against the warehouse file in READ-ONLY mode.
+
+    Read-only matters: a query tool should never be able to modify the tables
+    that dbt owns, and it lets inspection run while a build holds the file.
+    """
+    import sys
+
+    import duckdb
+
+    from aegis.modeling.dbt_runner import warehouse_path
+
+    path = warehouse_path()
+    if not path.exists():
+        console.print("[yellow]No warehouse yet. Run:  aegis model build[/]")
+        raise typer.Exit(code=1)
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        con.sql(query).show(max_width=140, max_rows=50)
+    except Exception as exc:
+        console.print(f"[red]{str(exc)[:400]}[/]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        con.close()
+
+
 if __name__ == "__main__":
     app()

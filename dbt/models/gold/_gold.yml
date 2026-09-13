@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: vendor_exploitation
+    description: >
+      Answers "which vendors are most actively exploited, and how much of it is
+      ransomware?" One row per vendor.
+    columns:
+      - name: vendor
+        data_tests: [unique, not_null]
+      - name: exploited_cves
+        data_tests: [not_null]
+
+  - name: malware_url_tags
+    description: >
+      Answers "which malware families are being distributed, from how many
+      servers?" One row per URLhaus tag.
+    columns:
+      - name: tag
+        data_tests: [unique, not_null]
+      - name: distinct_hosts
+        description: More telling than raw URL count - one server can host thousands of URLs.
+
+  - name: c2_infrastructure
+    description: >
+      Answers "are botnet C2 servers hiding behind Tor?" by joining Feodo
+      against the Tor exit list. The first table in AEGIS that needs two sources.
+    columns:
+      - name: ip_address
+        data_tests: [unique, not_null]
+      - name: was_ever_tor_exit
+        data_tests: [not_null]

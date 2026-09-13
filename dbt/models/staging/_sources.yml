@@ -1,0 +1,33 @@
+# ============================================================================
+# Sources: the tables dbt reads but does not build.
+#
+# Declaring Bronze here, instead of writing `FROM bronze.urlhaus` inside the
+# models, is what gives dbt the full lineage graph: it knows every Silver and
+# Gold table ultimately depends on these five Iceberg tables, and `dbt docs`
+# draws that from end to end.
+#
+# `plugin: iceberg` tells dbt-duckdb to load each table through PyIceberg at the
+# start of the build, so the models below can treat them as ordinary tables.
+# ============================================================================
+
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Raw events exactly as they arrived from Kafka. Append-only and never
+      edited, so the same real-world record appears once per collection run.
+      Deduplication is deliberately NOT done here - see the silver models.
+    schema: bronze
+    meta:
+      plugin: iceberg
+
+    tables:
+      - name: urlhaus
+        description: URLs currently distributing malware (abuse.ch URLhaus).
+      - name: cisa_kev
+        description: Vulnerabilities proven to be exploited in the wild (CISA KEV).
+      - name: feodo
+        description: Botnet command-and-control servers (abuse.ch Feodo Tracker).
+      - name: tor_exit
+        description: Tor exit-node IP addresses, one snapshot per collection.
