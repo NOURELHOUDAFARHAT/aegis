@@ -779,5 +779,105 @@ def _warehouse_query(query: str) -> None:
         con.close()
 
 
+# ===========================================================================
+# Phase 5 - orchestration commands (Dagster)
+# ===========================================================================
+
+orch_app = typer.Typer(help="Run and schedule the pipeline with Dagster.", no_args_is_help=True)
+app.add_typer(orch_app, name="orchestrate")
+
+
+@orch_app.command("dev")
+def orchestrate_dev(
+    port: int = typer.Option(3030, "--port", help="Port for the Dagster web UI."),
+) -> None:
+    """Start the Dagster UI and daemon. Stop with Ctrl+C.
+
+    The daemon is what runs schedules and sensors; the UI is where you watch,
+    trigger and inspect runs. Port 3030 rather than Dagster's default 3000,
+    which Next.js development servers also claim.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from aegis.orchestration.home import prepare_dagster_home
+
+    env = {**os.environ, **prepare_dagster_home()}
+    exe_name = "dagster.exe" if sys.platform == "win32" else "dagster"
+    exe = Path(sys.executable).with_name(exe_name)
+    command = [
+        str(exe) if exe.exists() else "dagster",
+        "dev",
+        "-m",
+        "aegis.orchestration.definitions",
+        "-p",
+        str(port),
+    ]
+    console.print(f"Dagster UI starting on [cyan]http://localhost:{port}[/]  (Ctrl+C to stop)")
+    raise SystemExit(subprocess.call(command, env=env))  # noqa: S603 - fixed argv, no shell
+
+
+@orch_app.command("run")
+def orchestrate_run(
+    job: str = typer.Option("aegis_pipeline", "--job", help="aegis_pipeline or rebuild_models"),
+) -> None:
+    """Run a job once, in this process, without the UI.
+
+    The run is recorded in the same Dagster instance the UI reads, so it appears
+    in the run history afterwards. Sensors do not fire for in-process runs -
+    they belong to the daemon started by `aegis orchestrate dev`.
+    """
+    from aegis.orchestration.home import prepare_dagster_home
+
+    prepare_dagster_home()
+
+    from dagster import DagsterInstance
+
+    from aegis.orchestration.definitions import defs
+
+    resolve = getattr(defs, "resolve_job_def", None) or defs.get_job_def
+    job_def = resolve(job)
+
+    with DagsterInstance.get() as instance:
+        result = job_def.execute_in_process(instance=instance, raise_on_error=False)
+
+    materialized = sorted(
+        "/".join(e.asset_key.path)
+        for e in result.get_asset_materialization_events()
+        if e.asset_key is not None
+    )
+    failed_steps = sorted(
+        {e.step_key for e in result.all_events if e.is_step_failure and e.step_key}
+    )
+
+    out = Table(title=f"Dagster run {result.run_id[:8]} - {job}")
+    out.add_column("Asset", style="cyan")
+    for key in materialized:
+        out.add_row(key)
+    console.print(out)
+
+    from typing import Any
+
+    checks: list[Any] = getattr(result, "get_asset_check_evaluations", lambda: [])()
+    if checks:
+        failed_checks = [c for c in checks if not c.passed]
+        console.print(
+            f"  checks: [green]{len(checks) - len(failed_checks)} passed[/]"
+            + (f", [yellow]{len(failed_checks)} did not pass[/]" if failed_checks else "")
+        )
+        for c in failed_checks:
+            console.print(
+                f"    [yellow]{'/'.join(c.asset_key.path)}::{c.check_name}[/] ({c.severity.value})"
+            )
+
+    if failed_steps:
+        console.print(f"  [red]failed steps: {', '.join(failed_steps)}[/]")
+    if not result.success:
+        raise typer.Exit(code=1)
+    console.print(f"  [green]{len(materialized)} assets materialised.[/]")
+
+
 if __name__ == "__main__":
     app()

@@ -56,7 +56,17 @@ dependencies = [
 
 [project.optional-dependencies]
 # Installed later, phase by phase, to keep the first setup fast and small.
-orchestration = ["dagster~=1.9", "dagster-webserver~=1.9", "dagster-duckdb~=0.25"]
+# Pinned to EXACT versions, unlike every other dependency (which use `~=`).
+# orchestration/definitions.py relies on Definitions.map_resolved_asset_specs,
+# which Dagster marks as preview: "may have breaking changes in PATCH version
+# releases". `~=1.13` would accept exactly those patches. Upgrade deliberately,
+# run tests/test_orchestration.py, then move the pins together.
+orchestration = [
+    "dagster==1.13.22",
+    "dagster-webserver==1.13.22",
+    "dagster-dbt==0.29.22",
+    "dagster-postgres==0.29.22",
+]
 quality       = ["dbt-core~=1.8", "dbt-duckdb~=1.8", "great-expectations~=1.2"]
 ml            = ["scikit-learn~=1.5", "mlflow~=2.18", "sentence-transformers~=3.3", "lancedb~=0.17"]
 api           = ["fastapi~=0.115", "uvicorn[standard]~=0.32", "websockets~=13.1"]

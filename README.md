@@ -278,6 +278,52 @@ The first build found three problems worth reading about in
 race in dbt's source loading, test records that had leaked into production
 tables, and a uniqueness test that asserted the wrong invariant.
 
+### Orchestrate it: Dagster
+
+```powershell
+aegis orchestrate run                       # the whole pipeline once, no UI
+aegis orchestrate run --job rebuild_models  # only dbt: no downloads
+aegis orchestrate dev                       # Dagster UI + daemon on http://localhost:3030
+```
+
+The pipeline is one Dagster **asset graph** of 19 assets, from each feed to each
+Gold table. Each node is a thing that exists rather than a step that runs, so
+Dagster derives the order itself, can say what is stale, and can rebuild one
+table without re-running the chain:
+
+```
+raw/feodo -> bronze/feodo -> staging/stg_feodo -> silver/feodo_c2_servers -> gold/c2_infrastructure
+```
+
+| Guarantee | How |
+|---|---|
+| Flaky feeds are retried | 3 retries with exponential backoff (30s, 60s, 120s) |
+| An empty Bronze table cannot feed dbt | blocking `has_rows` check on every Bronze asset |
+| Bronze read everything Kafka held | `consumer_caught_up` lag check on every Bronze asset |
+| Nothing goes stale silently | freshness policy on Bronze and Gold: warn at 8h, fail at 14h |
+| Runs never overlap | queued run coordinator, one run at a time |
+| Nothing downloads until you decide | 6-hour UTC schedule, **off by default** |
+
+One end-to-end run, measured before and after:
+
+| Feed | Bronze rows added | Silver rows added |
+|---|---:|---:|
+| `cisa_kev` | 1,709 | 14 |
+| `urlhaus` | 12,681 | 391 |
+| `tor_exit` | 1,325 | 34 |
+| `feodo` | 7 | 0 |
+
+19 assets materialised in about 90 seconds. 41 of 42 checks passed (the warning
+is a known duplicate from a demo script), and dbt's three reconciliation tests
+ran and passed. Bronze grew by a full collection; Silver grew only by genuinely
+new entities, and every Silver table still equals the distinct keys in Bronze.
+
+**Not yet exercised:** the schedule, the run sensors and freshness evaluation
+all need the Dagster daemon (`aegis orchestrate dev`), which has not been run on
+the development machine for lack of free memory. See
+`docs/adr/0007-orchestration-as-a-dagster-asset-graph.md`, which also records
+four traps the first build hit.
+
 ## Project layout
 
 ```
@@ -312,8 +358,8 @@ aegis/
 | **2** | Streaming: Kafka, Avro schemas, partitioning, DLQ | 🟢 **Done** |
 | **3** | Lakehouse: Iceberg Bronze, time travel, partitioning | 🟢 **Done** |
 | **4** | Modelling: dbt Silver/Gold, data tests, reconciliation | 🟢 **Done** |
-| 5 | Orchestration: Dagster assets, backfills, freshness SLAs | ⚪ Next |
-| 6 | AI: anomaly detection, clustering, MLflow, RAG assistant | ⚪ |
+| **5** | Orchestration: Dagster assets, checks, freshness, schedule | 🟢 **Done** |
+| 6 | AI: anomaly detection, clustering, MLflow, RAG assistant | ⚪ Next |
 | 7 | Product: FastAPI + Next.js real-time dashboard | ⚪ |
 | 8 | Security & governance: PII redaction, RBAC, SAST, audit | ⚪ |
 | 9 | Cloud: Terraform, GitHub Actions, observability, FinOps | ⚪ |

@@ -1,0 +1,55 @@
+# ============================================================================
+# AEGIS - Dagster instance configuration
+#
+# The committed source of truth. `aegis orchestrate` copies this file into
+# DAGSTER_HOME (outside OneDrive) on every start, so edits belong here, not in
+# the copy.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Run, event and schedule storage in Postgres, in the `orchestration` schema.
+#
+# The default is SQLite files in DAGSTER_HOME. Postgres instead because the
+# container already exists, it survives DAGSTER_HOME being wiped, and it lets
+# the webserver and the daemon - two separate processes - write concurrently,
+# which SQLite handles poorly.
+#
+# The URL comes from an environment variable. This file contains no password.
+# ----------------------------------------------------------------------------
+storage:
+  postgres:
+    postgres_url:
+      env: AEGIS_DAGSTER_PG_URL
+
+# ----------------------------------------------------------------------------
+# One run at a time.
+#
+# A full pipeline run holds Kafka consumers, an Iceberg writer and a DuckDB
+# write lock, on a laptop with under 8 GB of RAM. Two overlapping runs would
+# fight over the warehouse file and double the memory. The queued coordinator
+# makes a second run WAIT instead of starting alongside the first - so a slow
+# run plus the next scheduled tick degrades into a delay, not a failure.
+# ----------------------------------------------------------------------------
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 1
+
+# ----------------------------------------------------------------------------
+# Keep the tick history bounded. A sensor ticking every 30 seconds writes
+# ~2,900 rows a day; without retention the orchestration schema grows forever.
+# ----------------------------------------------------------------------------
+retention:
+  schedule:
+    purge_after_days: 30
+  sensor:
+    purge_after_days:
+      skipped: 7
+      failure: 30
+      success: 7
+
+# Dagster reports anonymous usage statistics by default. A security-telemetry
+# platform should make no outbound calls it does not need.
+telemetry:
+  enabled: false
