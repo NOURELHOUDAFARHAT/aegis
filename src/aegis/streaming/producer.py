@@ -224,11 +224,26 @@ class KafkaSink:
                     topic=topic,
                     key=key,
                     value=value,
-                    # The broker-side timestamp. Setting it from occurred_at
-                    # means Kafka's own time-based tools (offsets_for_times,
-                    # retention) reason about when the event HAPPENED, not when
-                    # we happened to publish it.
-                    timestamp=int(event.occurred_at.timestamp() * 1000),
+                    # INGESTION time, not event time. This line used to read
+                    # `int(event.occurred_at.timestamp() * 1000)`, and that was
+                    # a real bug that destroyed 45,233 records.
+                    #
+                    # Kafka's message timestamp is not just metadata: with the
+                    # default `message.timestamp.type=CreateTime`, the broker
+                    # uses it to decide when a log segment has aged out. Feeding
+                    # it event time therefore means retention counts from when
+                    # the malware was first seen, not from when we collected it.
+                    #
+                    # URLhaus publishes a rolling 30-day window, so on a topic
+                    # with 7-day retention most records were already expired at
+                    # the instant they were written. They were accepted, they
+                    # appeared in the delivery reports, and they were deleted
+                    # before anything could read them. Nothing errored.
+                    #
+                    # Event time is not lost - it rides in `occurred_at` inside
+                    # the payload, which is where a consumer should read it from
+                    # anyway. Kafka's own clock should only ever describe Kafka.
+                    timestamp=int(event.ingested_at.timestamp() * 1000),
                     headers={
                         # Headers travel with the message and can be read
                         # without deserialising the body - useful for routing

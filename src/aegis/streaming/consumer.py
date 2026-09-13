@@ -199,6 +199,7 @@ class EventConsumer:
         max_records: int | None = None,
         idle_timeout: float | None = None,
         dlq_sink: Any = None,
+        before_commit: Callable[[], None] | None = None,
     ) -> ConsumerStats:
         """Read messages and pass each to `handler`, committing after success.
 
@@ -211,6 +212,23 @@ class EventConsumer:
                 Turns an endless consumer into a "drain what exists" job -
                 which is exactly what a scheduled batch run wants.
             dlq_sink: a KafkaSink used to publish records that keep failing.
+            before_commit: called immediately BEFORE offsets are committed, and
+                only if it returns without raising.
+
+                This hook is the whole reason a batching consumer can be
+                correct. A writer that buffers rows in memory and flushes them
+                every thousand records must get the ordering exactly right:
+
+                    flush the buffer downstream  ->  THEN commit the offsets
+
+                Do it the other way round and a crash between the two loses
+                every buffered row while Kafka believes they were processed.
+                Putting the flush in this hook makes the safe order structural
+                rather than something each caller has to remember.
+
+                If the hook raises, offsets are NOT committed, and the records
+                are re-read after a restart. That is the correct outcome: the
+                data did not reach its destination.
         """
         self._install_signal_handlers()
         self._consumer.subscribe(self.topics)
@@ -298,6 +316,8 @@ class EventConsumer:
                 # every chance to process the record, or the record has been
                 # safely preserved in the dead-letter topic.
                 if since_commit >= self.commit_every:
+                    if before_commit is not None:
+                        before_commit()  # must succeed before offsets move
                     self._consumer.commit(asynchronous=False)
                     self.stats.committed_batches += 1
                     since_commit = 0
@@ -314,6 +334,8 @@ class EventConsumer:
             # reassigning our partitions - so every restart would stall.
             if since_commit > 0:
                 try:
+                    if before_commit is not None:
+                        before_commit()
                     self._consumer.commit(asynchronous=False)
                     self.stats.committed_batches += 1
                 except Exception as exc:

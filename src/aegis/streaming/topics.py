@@ -70,10 +70,32 @@ class TopicSpec:
             # Roll to a new log segment daily. Retention can only delete whole
             # segments, so huge segments mean data outliving its retention.
             "segment.ms": str(24 * 3_600_000),
-            # Reject a record whose timestamp is more than 7 days off from the
-            # broker's clock. Catches a collector with a broken clock before it
-            # poisons every time-based query downstream.
-            "message.timestamp.difference.max.ms": str(7 * 24 * 3_600_000),
+            # ---------------------------------------------------------------
+            # THE BROKER STAMPS THE TIME, NOT THE PRODUCER.
+            #
+            # The default is `CreateTime`, which trusts whatever timestamp the
+            # producer supplies - and the broker then uses that value to decide
+            # when a segment has aged out of retention.
+            #
+            # This project learned what that costs. An early producer set the
+            # message timestamp from the event's own `occurred_at`. URLhaus
+            # publishes a rolling 30-day window, so on a 7-day-retention topic
+            # most records were expired the moment they were written. 45,233
+            # messages were accepted, acknowledged, and silently deleted before
+            # any consumer read them. See docs/adr/0005.
+            #
+            # `LogAppendTime` makes the broker overwrite the timestamp with its
+            # own clock on arrival. Retention then means what it says: N days
+            # from when we RECEIVED the data. The producer was fixed too, but
+            # this setting is what makes the bug unrepeatable - a future
+            # producer, or a colleague's script, cannot reintroduce it.
+            #
+            # The trade-off is real: Kafka's time-based lookups now answer
+            # "what arrived around 14:00", not "what happened around 14:00".
+            # That is the correct meaning for a transport layer. Event time
+            # lives in `occurred_at` in the payload, where analysis reads it.
+            # ---------------------------------------------------------------
+            "message.timestamp.type": "LogAppendTime",
         }
         base.update(self.config)
         return base

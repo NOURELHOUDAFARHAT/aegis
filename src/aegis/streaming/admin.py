@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from confluent_kafka.admin import AdminClient, ConfigResource, NewTopic
+from confluent_kafka.admin import (
+    AdminClient,
+    AlterConfigOpType,
+    ConfigEntry,
+    ConfigResource,
+    NewTopic,
+)
 
 from aegis.config import settings
 from aegis.logging import get_logger
@@ -91,6 +97,94 @@ def create_topics(*, dry_run: bool = False) -> dict[str, str]:
             else:
                 results[name] = f"error: {message[:120]}"
                 log.error("topic_create_failed", topic=name, error=message[:200])
+
+    return results
+
+
+def apply_configs(*, dry_run: bool = False) -> dict[str, str]:
+    """Reconcile every existing topic's settings with what topics.py declares.
+
+    WHY THIS IS A SEPARATE STEP FROM create_topics()
+    ------------------------------------------------
+    `create_topics` applies our settings only to topics it creates. A topic that
+    already exists keeps whatever configuration it was born with, forever, no
+    matter what the declaration says. That gap is called configuration drift,
+    and it is quietly dangerous: the file in git says one thing, the running
+    system does another, and nobody notices until the difference costs
+    something.
+
+    This project paid for that lesson. Changing `message.timestamp.type` in
+    topics.py fixed nothing on its own, because all five topics already
+    existed - so the broker kept using the producer's timestamps and kept
+    expiring data early.
+
+    Terraform solves this by comparing desired state to actual state on every
+    run. This function does the same thing for Kafka topic configs, and it is
+    deliberately explicit rather than automatic: changing a live topic's
+    retention can delete data, so it should be a command someone runs, not a
+    side effect of starting up.
+
+    Note the limit: only *configuration* is reconcilable. Partition count can be
+    increased but never decreased, and changing it reshuffles key-to-partition
+    mapping - so that one still needs a deliberate migration.
+    """
+    admin = get_admin()
+    metadata = admin.list_topics(timeout=10)
+    results: dict[str, str] = {}
+
+    for spec in all_specs():
+        if spec.name not in metadata.topics:
+            results[spec.name] = "missing"
+            continue
+
+        resource = ConfigResource(ConfigResource.Type.TOPIC, spec.name)
+        try:
+            current = admin.describe_configs([resource])[resource].result(timeout=10)
+        except Exception as exc:
+            results[spec.name] = f"error reading config: {str(exc)[:80]}"
+            continue
+
+        desired = spec.broker_config()
+        drift = {
+            key: value
+            for key, value in desired.items()
+            if key in current and str(current[key].value) != str(value)
+        }
+
+        if not drift:
+            results[spec.name] = "in sync"
+            continue
+
+        summary = ", ".join(f"{k}: {current[k].value} -> {v}" for k, v in drift.items())
+        if dry_run:
+            results[spec.name] = f"would change {summary}"
+            continue
+
+        # incremental_alter_configs changes only the keys we name, leaving every
+        # other setting alone. The older alter_configs() REPLACES the whole
+        # config and silently resets anything not listed - a genuinely
+        # destructive default that has bitten a lot of people.
+        #
+        # The two APIs take their payload differently, and mixing them up gives
+        # the unhelpful error "expected non-empty list of ConfigEntry to alter
+        # incrementally": `set_config()` fills the dict that alter_configs()
+        # reads, while incremental_alter_configs() reads `incremental_configs`
+        # and needs each entry to state its operation (SET / DELETE / APPEND).
+        alter = ConfigResource(
+            ConfigResource.Type.TOPIC,
+            spec.name,
+            incremental_configs=[
+                ConfigEntry(key, str(value), incremental_operation=AlterConfigOpType.SET)
+                for key, value in drift.items()
+            ],
+        )
+        try:
+            admin.incremental_alter_configs([alter])[alter].result(timeout=20)
+            results[spec.name] = f"updated {summary}"
+            log.info("topic_config_updated", topic=spec.name, changes=drift)
+        except Exception as exc:
+            results[spec.name] = f"error: {str(exc)[:100]}"
+            log.error("topic_config_failed", topic=spec.name, error=str(exc)[:200])
 
     return results
 

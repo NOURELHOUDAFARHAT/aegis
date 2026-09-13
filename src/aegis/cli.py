@@ -242,6 +242,37 @@ def topics_create(
     console.print(table)
 
 
+@topics_app.command("apply")
+def topics_apply(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the drift, change nothing."),
+) -> None:
+    """Reconcile existing topics' settings with what topics.py declares.
+
+    `topics create` only configures topics it creates. This command fixes
+    topics that already exist but have drifted from the declaration - the
+    Kafka equivalent of `terraform apply`.
+    """
+    from aegis.streaming.admin import apply_configs
+
+    out = Table(title="Topic configuration" + (" (dry run)" if dry_run else ""))
+    out.add_column("Topic", style="cyan", no_wrap=True)
+    out.add_column("Result")
+
+    changed = 0
+    for name, outcome in sorted(apply_configs(dry_run=dry_run).items()):
+        if outcome == "in sync":
+            colour = "dim"
+        elif outcome.startswith("error") or outcome == "missing":
+            colour = "red"
+        else:
+            colour = "yellow"
+            changed += 1
+        out.add_row(name, f"[{colour}]{outcome}[/]")
+    console.print(out)
+    if changed and not dry_run:
+        console.print(f"  [green]{changed} topic(s) reconciled.[/]")
+
+
 @topics_app.command("list")
 def topics_list() -> None:
     """Show what the broker actually has, including message counts."""
@@ -389,6 +420,253 @@ def lag(
         )
     console.print(table)
     console.print(f"  total lag: [bold]{total:,}[/] records")
+
+
+# ===========================================================================
+# Phase 3 - lakehouse commands
+# ===========================================================================
+
+lake_app = typer.Typer(help="Manage the Iceberg lakehouse.", no_args_is_help=True)
+app.add_typer(lake_app, name="lake")
+
+
+@lake_app.command("init")
+def lake_init(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be created."),
+) -> None:
+    """Create the namespaces and Bronze tables. Safe to re-run."""
+    from aegis.lakehouse.catalog import ensure_namespaces
+    from aegis.lakehouse.tables import create_bronze_tables
+
+    if not dry_run:
+        namespaces = ensure_namespaces()
+        console.print(f"  namespaces: [bold]{', '.join(namespaces)}[/]")
+        console.print()
+
+    out = Table(title="Bronze tables")
+    out.add_column("Table", style="cyan")
+    out.add_column("Result")
+    for name, outcome in sorted(create_bronze_tables(dry_run=dry_run).items()):
+        colour = {"created": "green", "exists": "dim", "would create": "yellow"}.get(outcome, "red")
+        out.add_row(name, f"[{colour}]{outcome}[/]")
+    console.print(out)
+
+
+@lake_app.command("sync")
+def lake_sync(
+    source: str = typer.Argument("all", help="Source name, or 'all'."),
+    from_beginning: bool = typer.Option(
+        False,
+        "--from-beginning",
+        help="Re-read the entire topic instead of resuming. This is a replay.",
+    ),
+    batch_size: int = typer.Option(2000, "--batch-size", help="Rows per Iceberg commit."),
+    idle: float = typer.Option(
+        8.0, "--idle", help="Stop after this many seconds with no new messages."
+    ),
+) -> None:
+    """Read Kafka and append to Bronze.
+
+    Resumes from wherever it stopped last time, so running it twice does not
+    redo work. Use --from-beginning to deliberately reprocess everything.
+    """
+    from aegis.lakehouse.tables import BRONZE_TABLES
+    from aegis.lakehouse.writer import sync_all
+
+    names = None if source == "all" else [source]
+    if names and names[0] not in BRONZE_TABLES:
+        console.print(f"[red]Unknown source '{source}'.[/]")
+        console.print(f"Available: {', '.join(sorted(BRONZE_TABLES))}")
+        raise typer.Exit(code=1)
+
+    results = sync_all(
+        names, from_beginning=from_beginning, batch_size=batch_size, idle_timeout=idle
+    )
+
+    out = Table(title="Bronze sync")
+    out.add_column("Source", style="cyan")
+    out.add_column("Table", style="dim")
+    out.add_column("Read", justify="right")
+    out.add_column("Written", justify="right")
+    out.add_column("Batches", justify="right")
+    out.add_column("Snapshots", justify="right")
+    out.add_column("Status")
+
+    for r in results:
+        out.add_row(
+            r.source,
+            r.table,
+            f"{r.rows_read:,}",
+            f"{r.rows_written:,}",
+            str(r.batches),
+            f"+{r.snapshots_created}",
+            "[green]ok[/]" if r.ok else f"[red]{r.errors[0][:40]}[/]",
+        )
+    console.print()
+    console.print(out)
+
+    if any(not r.ok for r in results):
+        raise typer.Exit(code=1)
+
+
+@lake_app.command("tables")
+def lake_tables() -> None:
+    """Show every Bronze table: rows, files, snapshots, size."""
+    from aegis.lakehouse.writer import bronze_stats
+
+    out = Table(title="Lakehouse - Bronze layer")
+    out.add_column("Table", style="cyan")
+    out.add_column("Rows", justify="right")
+    out.add_column("Files", justify="right")
+    out.add_column("Rows/file", justify="right")
+    out.add_column("Size", justify="right")
+    out.add_column("Snaps", justify="right")
+    out.add_column("Last written", style="dim")
+
+    for stats in bronze_stats():
+        if stats.error:
+            out.add_row(stats.table, "-", "-", "-", "-", "-", f"[red]{stats.error}[/]")
+            continue
+        # Flag the small-files problem before it becomes a performance issue.
+        # Under a few hundred rows per file, a table is spending more time
+        # opening files than reading them.
+        density = stats.avg_rows_per_file
+        colour = "green" if density >= 1000 else ("yellow" if density >= 200 else "red")
+        out.add_row(
+            stats.table,
+            f"{stats.rows:,}",
+            str(stats.files),
+            f"[{colour}]{density:,.0f}[/]" if stats.files else "-",
+            f"{stats.size_mb:.1f} MB",
+            str(stats.snapshots),
+            stats.last_updated.strftime("%Y-%m-%d %H:%M") if stats.last_updated else "-",
+        )
+    console.print(out)
+
+
+@lake_app.command("history")
+def lake_history(
+    source: str = typer.Argument(..., help="Source name, e.g. feodo"),
+) -> None:
+    """Show a table's snapshots - every version it has ever had.
+
+    Each row is a point in time you can query the table AS OF. That is time
+    travel, and it is what makes a data incident investigable rather than
+    guessed at.
+    """
+    from datetime import datetime, timezone
+
+    from aegis.lakehouse.tables import load_bronze
+    from aegis.lakehouse.writer import snapshot_summary
+
+    table = load_bronze(source)
+    current = table.current_snapshot()
+    current_id = current.snapshot_id if current else None
+
+    out = Table(title=f"Snapshot history - {'.'.join(table.name())}")
+    out.add_column("", width=2)
+    out.add_column("Snapshot ID", style="cyan")
+    out.add_column("When", style="dim")
+    out.add_column("Operation")
+    out.add_column("Rows added", justify="right")
+    out.add_column("Total rows", justify="right")
+
+    for snap in table.metadata.snapshots:
+        operation, summary = snapshot_summary(snap)
+        when = datetime.fromtimestamp(snap.timestamp_ms / 1000, tz=timezone.utc)
+        out.add_row(
+            "[green]>[/]" if snap.snapshot_id == current_id else "",
+            str(snap.snapshot_id),
+            when.strftime("%Y-%m-%d %H:%M:%S"),
+            operation,
+            f"{int(summary.get('added-records', 0) or 0):,}",
+            f"{int(summary.get('total-records', 0) or 0):,}",
+        )
+    console.print(out)
+    console.print("  [dim]> marks the current version. Read an older one with:[/]")
+    console.print(f"  [dim]aegis lake sample {source} --snapshot <ID>[/]")
+
+
+@lake_app.command("sample")
+def lake_sample(
+    source: str = typer.Argument(..., help="Source name, e.g. feodo"),
+    limit: int = typer.Option(3, "--limit", "-n"),
+    snapshot: int | None = typer.Option(
+        None, "--snapshot", help="Read the table as it was at this snapshot ID."
+    ),
+) -> None:
+    """Print a few rows from a Bronze table, optionally as of an older snapshot."""
+    import json as _json
+
+    from aegis.lakehouse.tables import load_bronze
+
+    table = load_bronze(source)
+    if snapshot is not None:
+        scan = table.scan(limit=limit, snapshot_id=snapshot)
+        console.print(f"[yellow]Reading the table as it was at snapshot {snapshot}[/]")
+        console.print()
+    else:
+        scan = table.scan(limit=limit)
+
+    for i, row in enumerate(scan.to_arrow().to_pylist(), start=1):
+        console.print(f"[bold cyan]#{i}[/]  {row['source']} / {row['event_type']}")
+        console.print(f"  event_id    : {row['event_id']}")
+        console.print(f"  occurred_at : {row['occurred_at']}")
+        console.print(
+            f"  from kafka  : {row['_kafka_topic']} "
+            f"p{row['_kafka_partition']} offset {row['_kafka_offset']}"
+        )
+        try:
+            payload = _json.dumps(_json.loads(row["payload"]), separators=(",", ":"))
+        except Exception:
+            payload = str(row["payload"])
+        console.print(f"  payload     : {payload[:260]}")
+        console.print()
+
+
+@lake_app.command("sql")
+def lake_sql(
+    query: str = typer.Argument(..., help="SQL. Bronze tables are registered by short name."),
+) -> None:
+    """Run SQL against the Bronze tables with DuckDB.
+
+    Each Bronze table is registered under its short name, so you write ordinary
+    SQL:
+
+        aegis lake sql "SELECT event_type, count(*) FROM cisa_kev GROUP BY 1"
+    """
+    import duckdb
+
+    from aegis.lakehouse.tables import BRONZE_TABLES, load_bronze
+
+    con = duckdb.connect()
+    registered = []
+    for name in BRONZE_TABLES:
+        try:
+            arrow = load_bronze(name).scan().to_arrow()
+            con.register(name, arrow)
+            registered.append(f"{name}({arrow.num_rows:,})")
+        except Exception as exc:
+            # A table that will not load should not stop the query - the other
+            # tables may be exactly what the user asked about. But it must be
+            # visible: a silently missing table makes a query return a wrong
+            # answer that looks right.
+            console.print(f"[yellow]  skipped {name}: {str(exc)[:90]}[/]")
+
+    console.print(f"[dim]registered: {', '.join(registered)}[/]")
+    console.print()
+    try:
+        # DuckDB renders its own result tables, so we do not need pandas just
+        # to print. It draws with Unicode box characters, which the legacy
+        # Windows codepage cannot encode - hence the stdout reconfigure.
+        import sys
+
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        con.sql(query).show(max_width=120, max_rows=40)
+    except Exception as exc:
+        console.print(f"[red]{str(exc)[:400]}[/]")
+        raise typer.Exit(code=1) from exc
 
 
 if __name__ == "__main__":

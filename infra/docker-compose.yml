@@ -72,7 +72,12 @@ services:
       REDPANDA_ADMINAPI_ENABLED: "true"
       REDPANDA_ADMINAPI_URLS: http://redpanda:9644
     ports:
-      - "8080:8080"
+      # 8088, not the conventional 8080. Port 8080 is the single most contested
+      # port on any developer machine - on this one it is already taken by an
+      # unrelated WordPress project. A port collision stops the container with
+      # a message ("Bind for 0.0.0.0:8080 failed") that is easy to misread as a
+      # broken image, so we pick a port nothing else wants and say why here.
+      - "8088:8080"
     mem_limit: 160m
 
   # --------------------------------------------------------------------------

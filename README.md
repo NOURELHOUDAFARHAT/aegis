@@ -134,7 +134,7 @@ Then open:
 
 | Service | URL | What it shows |
 |---|---|---|
-| Redpanda Console | http://localhost:8080 | Topics, live messages, consumer lag, schemas |
+| Redpanda Console |  http://localhost:8088 | Topics, live messages, consumer lag, schemas |
 | Schema Registry | http://localhost:18081/subjects | The registered data contracts |
 | MinIO Console | http://localhost:9001 | The lakehouse files as they are written |
 
@@ -204,6 +204,40 @@ schema change is refused, a safe one is accepted, and a record that cannot be
 serialised lands in the dead-letter topic with its cause attached while the
 pipeline keeps running.
 
+### Land it in the lakehouse
+
+```powershell
+aegis lake init                     # create namespaces and Bronze tables
+aegis lake sync all                 # Kafka -> Iceberg, resuming where it stopped
+aegis lake tables                   # rows, files, snapshots, size
+aegis lake history urlhaus          # every version the table has ever had
+aegis lake sample feodo --snapshot <ID>   # read the table AS IT WAS
+aegis lake sql "SELECT count(*) FROM cisa_kev"
+```
+
+Bronze holds ~21,800 rows across five Apache Iceberg tables in object storage,
+written **without a JVM** - `pyiceberg` plus PyArrow, nothing else. What that
+buys over a folder of Parquet files:
+
+| Property | What it means here |
+|---|---|
+| **Atomic commits** | A query running during a write sees the previous snapshot, never a half-written table |
+| **Time travel** | `urlhaus` has 7 snapshots; each is queryable, so "what did this look like before the bad load?" has an answer |
+| **Hidden partitioning** | Files are laid out by ingestion day; a filtered query skips whole folders without the query naming the partition column |
+| **Schema evolution** | Columns are tracked by ID, not name, so a rename is metadata-only |
+
+Two ordering rules make the writer safe, and both are enforced structurally
+rather than by convention:
+
+1. **Flush to Iceberg, then commit Kafka offsets.** The flush happens inside the
+   consumer's `before_commit` hook, so the unsafe order cannot be written.
+2. **Never start a Bronze consumer at `latest`.** A fresh consumer group with
+   `latest` silently skips everything already in the topic and reports success.
+
+Both rules exist because this project broke them first - see
+`docs/adr/0005-kafka-timestamps-are-ingestion-time.md`, which cost 45,233
+records.
+
 ## Project layout
 
 ```
@@ -236,8 +270,8 @@ aegis/
 | **0** | Foundations: infra, config, logging, quality gates | 🟢 **Done** |
 | **1** | Sources: 4 live threat feeds, envelope, sinks, watermarks | 🟢 **Done** |
 | **2** | Streaming: Kafka, Avro schemas, partitioning, DLQ | 🟢 **Done** |
-| 3 | Lakehouse: Iceberg bronze, time travel, compaction | ⚪ Next |
-| 4 | Modelling: dbt silver/gold, data quality, contracts | ⚪ |
+| **3** | Lakehouse: Iceberg Bronze, time travel, partitioning | 🟢 **Done** |
+| 4 | Modelling: dbt Silver/Gold, data quality, contracts | ⚪ Next |
 | 5 | Orchestration: Dagster assets, backfills, freshness SLAs | ⚪ |
 | 6 | AI: anomaly detection, clustering, MLflow, RAG assistant | ⚪ |
 | 7 | Product: FastAPI + Next.js real-time dashboard | ⚪ |

@@ -43,7 +43,11 @@ dependencies = [
     # backtracks through thousands of botocore releases and appears to hang.
     # PyIceberg reaches S3 through PyArrow's own S3FileSystem instead, which
     # is faster anyway (C++, no Python async layer).
-    "pyiceberg[sql-postgres,pyarrow]~=0.8",
+    # `pyiceberg-core` is a Rust extension, and it is REQUIRED to write to a
+    # PARTITIONED table. Without it, unpartitioned writes work fine and
+    # partitioned ones fail at runtime with "pyiceberg_core needs to be
+    # installed" - so the gap only appears once the table design is realistic.
+    "pyiceberg[sql-postgres,pyarrow,pyiceberg-core]~=0.8",
     "pyarrow~=18.0",              # columnar in-memory format; Parquet writer
     "duckdb~=1.1",                # embedded OLAP engine = our query layer
     "polars~=1.15",               # fast DataFrames; the pandas we actually want
