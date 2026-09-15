@@ -1103,5 +1103,201 @@ def ml_ask(
     console.print("\n  [dim]Ranked evidence to read, not an answer to trust blindly.[/]")
 
 
+@ml_app.command("sessions")
+def ml_sessions(
+    top: int = typer.Option(10, "--top", help="How many flagged sessions to show."),
+) -> None:
+    """Flag honeypot sessions that behave unlike the rest, and say why."""
+    from aegis.ml import sessions
+    from aegis.ml.tracking import EXPERIMENT_SESSIONS, track
+
+    con = _warehouse_connection()
+    try:
+        with track(EXPERIMENT_SESSIONS, "cli") as run:
+            result = sessions.run(con)
+            run.params(
+                {
+                    "min_sessions": sessions.MIN_SESSIONS,
+                    "flag_quantile": sessions.FLAG_QUANTILE,
+                    "n_estimators": sessions.N_ESTIMATORS,
+                }
+            )
+            run.metrics(
+                {
+                    "sessions": result.sessions,
+                    "flagged": result.flagged,
+                    "stability_top_k": result.stability,
+                    "top_k": result.top_k,
+                }
+            )
+            run.tags({"status": result.status})
+
+        if result.status != "scored":
+            console.print(
+                f"[yellow]{result.sessions} closed sessions so far.[/] At least "
+                f"{sessions.MIN_SESSIONS} are needed before any session can be called unusual."
+            )
+            return
+
+        rows = con.execute(
+            "SELECT anomaly_rank, session_id, src_ip, started_at, reasons "
+            "FROM ml.honeypot_session_anomalies WHERE is_flagged ORDER BY anomaly_rank LIMIT ?",
+            [top],
+        ).fetchall()
+    finally:
+        con.close()
+
+    table = Table(title="Unusual honeypot sessions")
+    table.add_column("Rank", justify="right")
+    table.add_column("Session", style="cyan")
+    table.add_column("Source IP")
+    table.add_column("Started (UTC)")
+    table.add_column("Why it stands out")
+    for rank, session_id, src_ip, started_at, reasons in rows:
+        table.add_row(str(rank), session_id, src_ip, f"{started_at:%Y-%m-%d %H:%M}", reasons or "")
+    console.print(table)
+    console.print(
+        f"\n{result.sessions:,} sessions scored, {result.flagged} flagged. "
+        f"Top-{result.top_k} overlap across five random seeds: {result.stability:.2f} "
+        "(1.00 = the ranking does not depend on luck)."
+    )
+
+
+# ===========================================================================
+# Phase 7 - the honeypot
+# ===========================================================================
+honeypot_app = typer.Typer(
+    help="Collect attack sessions from the Cowrie honeypot sensor.", no_args_is_help=True
+)
+app.add_typer(honeypot_app, name="honeypot")
+
+
+def _honeypot_log_source(from_dir: str | None) -> tuple[Any, Any]:
+    """The log source and its cursor, or a plain explanation when no sensor exists."""
+    from pathlib import Path
+
+    from aegis.sources.cowrie import CowrieNotConfiguredError, from_settings
+
+    try:
+        return from_settings(Path(from_dir) if from_dir else None)
+    except CowrieNotConfiguredError as exc:
+        console.print(
+            "[yellow]No sensor configured yet.[/] Build it with Terraform "
+            "(infra/honeypot/README.md), then copy the lines from "
+            "`terraform output aegis_env` into .env."
+        )
+        raise typer.Exit(code=1) from exc
+
+
+@honeypot_app.command("files")
+def honeypot_files(
+    from_dir: str | None = typer.Option(
+        None, "--from-dir", help="Read Cowrie logs from a local folder instead of the sensor."
+    ),
+) -> None:
+    """Show the sensor's log files and how much of each has been collected."""
+    from aegis.sources.cowrie import CowrieSourceError
+
+    source, cursor = _honeypot_log_source(from_dir)
+    try:
+        files = source.list_files()
+    except CowrieSourceError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    if not files:
+        console.print(
+            "[dim]No log files yet. Cowrie creates cowrie.json on the first connection.[/]"
+        )
+        return
+
+    offsets = cursor.load()
+    table = Table(title="Honeypot log files")
+    table.add_column("File", style="cyan")
+    table.add_column("Size", justify="right")
+    table.add_column("Collected", justify="right")
+    table.add_column("Still to collect", justify="right")
+    for file in files:
+        done = min(offsets.get(file.file_id, 0), file.size)
+        table.add_row(
+            file.name,
+            f"{file.size / 1024:,.0f} KB",
+            f"{done / file.size:.0%}" if file.size else "-",
+            f"{(file.size - done) / 1024:,.0f} KB",
+        )
+    console.print(table)
+
+
+@honeypot_app.command("collect")
+def honeypot_collect(
+    limit: int | None = typer.Option(None, "--limit", "-n", help="Stop after N events."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Read and parse, store nothing, keep the cursor where it is."
+    ),
+    show: bool = typer.Option(False, "--show", help="Print the first few events; stores nothing."),
+    to: str = typer.Option("file", "--to", help="Destination: 'file' (gzipped JSONL) or 'kafka'."),
+    out: str | None = typer.Option(
+        None, "--out", help="Output directory. Defaults to AEGIS_DATA_DIR/raw."
+    ),
+    from_dir: str | None = typer.Option(
+        None, "--from-dir", help="Read Cowrie logs from a local folder instead of the sensor."
+    ),
+) -> None:
+    """Collect every honeypot event recorded since the last run.
+
+    Examples::
+
+        aegis honeypot collect --show              # look at real attacks first
+        aegis honeypot collect --to kafka          # into the pipeline
+    """
+    from pathlib import Path
+
+    from aegis.sources.base import record_run
+    from aegis.sources.cowrie import CowrieCollector
+    from aegis.sources.sinks import ConsoleSink, CountingSink, JsonlFileSink
+
+    source, cursor = _honeypot_log_source(from_dir)
+    collector = CowrieCollector(source, cursor)
+    preview = show or dry_run
+
+    sink: Any
+    if show:
+        sink = ConsoleSink(limit=limit or 3)
+    elif dry_run:
+        sink = CountingSink()
+    elif to == "kafka":
+        from aegis.streaming.producer import KafkaSink
+
+        sink = KafkaSink(client_id="aegis-collector-cowrie")
+    elif to == "file":
+        sink = JsonlFileSink(
+            base_dir=Path(out) if out else Path(settings.data_dir) / "raw",
+            source="cowrie",
+            run_id=collector.run_id,
+        )
+    else:
+        console.print(f"[red]Unknown destination '{to}'. Use 'file' or 'kafka'.[/]")
+        raise typer.Exit(code=1)
+
+    result = collector.run(sink, limit=limit, commit=not preview)
+    if not preview:
+        record_run(result)
+
+    colour = "green" if result.status == "success" else "red"
+    console.print(
+        f"\n[{colour}]{result.status}[/]  {result.records_emitted:,} events, "
+        f"{result.records_rejected:,} rejected, {result.bytes_downloaded / 1024:,.0f} KB read "
+        f"in {result.duration_seconds:.1f}s"
+    )
+    if result.status != "success":
+        console.print(f"[red]{result.error_message}[/]")
+        raise typer.Exit(code=1)
+    if preview:
+        console.print(
+            "[dim]Preview only: the cursor did not move, so the next real run "
+            "collects these same events.[/]"
+        )
+
+
 if __name__ == "__main__":
     app()

@@ -114,6 +114,30 @@ class TestPartitionKey:
         event = make_event({"cve_id": "CVE-2026-1234", "vendor": "Microsoft"})
         assert key_for(event) == "CVE-2026-1234"
 
+    def test_honeypot_download_stays_with_its_session(self) -> None:
+        """A download event carries a `url`. Keyed by that URL it would land on a
+        different partition from its own session and could be processed before
+        the login that led to it."""
+        download = make_event(
+            {
+                "eventid": "cowrie.session.file_download",
+                "session": "a1b2c3",
+                "url": "http://x.test/b",
+            },
+            source=Source.COWRIE,
+        )
+        login = make_event(
+            {"eventid": "cowrie.login.success", "session": "a1b2c3", "src_ip": "100.64.0.1"},
+            source=Source.COWRIE,
+        )
+        assert key_for(download) == key_for(login) == "a1b2c3"
+
+    def test_honeypot_sessions_from_one_ip_are_not_merged(self) -> None:
+        """Keying by attacker IP would pile every session of a noisy scanner onto one partition."""
+        first = make_event({"session": "s1", "src_ip": "100.64.0.1"}, source=Source.COWRIE)
+        second = make_event({"session": "s2", "src_ip": "100.64.0.1"}, source=Source.COWRIE)
+        assert key_for(first) != key_for(second)
+
     def test_same_entity_always_produces_the_same_key(self) -> None:
         """This is the ordering guarantee. Two observations of one IP must
         land in the same partition, or 'current status' becomes a race."""

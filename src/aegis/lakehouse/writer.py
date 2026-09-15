@@ -417,7 +417,9 @@ def sync_all(
     """
     from aegis.lakehouse.tables import BRONZE_TABLES
 
-    names = sources or [s for s in BRONZE_TABLES if s != Source.COWRIE.value]
+    # Every Bronze table, the honeypot included since Phase 7. An empty topic
+    # costs one idle timeout, so a sensor that has not been built yet is harmless.
+    names = sources or list(BRONZE_TABLES)
     results = []
     for name in names:
         writer = BronzeWriter(name, batch_size=batch_size)

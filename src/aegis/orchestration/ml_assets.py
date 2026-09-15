@@ -316,7 +316,81 @@ def every_cve_is_searchable(context: AssetCheckExecutionContext) -> AssetCheckRe
     )
 
 
-ML_ASSETS: list[AssetsDefinition] = [url_campaigns, kev_ransomware_scores, cve_embeddings]
+@asset(
+    name="honeypot_session_anomalies",
+    key_prefix=["ml"],
+    deps=[AssetKey(["silver", "honeypot_sessions"])],
+    group_name="ml",
+    kinds={"python", "scikit-learn", "duckdb"},
+    pool=WAREHOUSE_POOL,
+    description=(
+        "Honeypot sessions that behave unlike the rest (Isolation Forest), each with the "
+        "features that make it unusual. Needs at least 200 closed sessions; until then it "
+        "records 'insufficient_data' and writes nothing."
+    ),
+)
+def honeypot_session_anomalies(context: AssetExecutionContext) -> MaterializeResult:
+    from aegis.ml import sessions
+    from aegis.ml.tracking import EXPERIMENT_SESSIONS, track
+
+    con = _warehouse()
+    try:
+        with track(EXPERIMENT_SESSIONS, f"dagster-{context.run_id[:8]}") as run:
+            result = sessions.run(con)
+            run.params(
+                {
+                    "min_sessions": sessions.MIN_SESSIONS,
+                    "flag_quantile": sessions.FLAG_QUANTILE,
+                    "n_estimators": sessions.N_ESTIMATORS,
+                }
+            )
+            run.metrics(
+                {
+                    "sessions": result.sessions,
+                    "flagged": result.flagged,
+                    "stability_top_k": result.stability,
+                    "top_k": result.top_k,
+                }
+            )
+            run.tags({"status": result.status})
+            mlflow_run_id = run.run_id
+    finally:
+        con.close()
+
+    metadata: dict[str, Any] = {
+        "status": result.status,
+        "sessions": result.sessions,
+        "mlflow_run_id": mlflow_run_id,
+    }
+    if result.status == "scored":
+        metadata["dagster/row_count"] = result.sessions
+        metadata["flagged"] = result.flagged
+        metadata["top_k"] = result.top_k
+        if result.stability is not None:
+            metadata["stability_top_k"] = round(result.stability, 3)
+    else:
+        # Not a failure: a new sensor simply has not seen enough attacks yet. A
+        # red run every six hours for that would teach people to ignore red runs.
+        context.log.warning(
+            f"{result.sessions} closed sessions; {sessions.MIN_SESSIONS} are needed. Nothing scored."
+        )
+    return MaterializeResult(metadata=metadata)
+
+
+def _honeypot_configured() -> bool:
+    from aegis.sources.cowrie import is_configured
+
+    return is_configured()
+
+
+# The session model joins the graph with the sensor, like the honeypot's
+# ingestion assets (see bronze_sources in orchestration/assets.py).
+ML_ASSETS: list[AssetsDefinition] = [
+    url_campaigns,
+    kev_ransomware_scores,
+    cve_embeddings,
+    *([honeypot_session_anomalies] if _honeypot_configured() else []),
+]
 ML_CHECKS: list[AssetChecksDefinition] = [
     campaigns_align_with_subnets,
     ransomware_beats_chance,

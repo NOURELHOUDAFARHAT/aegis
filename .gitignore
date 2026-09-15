@@ -49,3 +49,16 @@ Thumbs.db
 mlruns/
 *.pkl
 *.joblib
+
+# --- Terraform ---
+# State holds every resource ID and public IP of the honeypot, and tfvars holds
+# your home IP address and OCIDs. Neither belongs in a public repository.
+# .terraform.lock.hcl IS committed: it pins the provider checksums.
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log

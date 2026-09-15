@@ -1,0 +1,45 @@
+version: 2
+
+# The honeypot's Silver contract. Same promise as every Silver model: the grain
+# is asserted with `unique`, so a broken deduplication stops the build.
+
+models:
+  - name: honeypot_events
+    description: >
+      One row per real event recorded by the sensor. Re-sent copies from a
+      collector retry are removed on content_hash; documentation addresses
+      are excluded.
+    columns:
+      - name: content_hash
+        description: SHA-256 of the Cowrie record. The grain of this table.
+        data_tests: [unique, not_null]
+      - name: session_id
+        data_tests: [not_null]
+      - name: src_ip
+        data_tests: [not_null]
+      - name: occurred_at
+        data_tests: [not_null]
+      - name: protocol
+        description: Present on connection events only.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["ssh", "telnet"]
+
+  - name: honeypot_sessions
+    description: >
+      One row per attack session, summarising what the attacker did. The
+      feature table for session anomaly detection.
+    columns:
+      - name: session_id
+        description: >
+          Cowrie's session id, the grain. Ids are random per session; if two
+          sessions ever collided, this test would say so instead of silently
+          merging two attacks into one row.
+        data_tests: [unique, not_null]
+      - name: src_ip
+        data_tests: [not_null]
+      - name: started_at
+        data_tests: [not_null]
+      - name: login_attempts
+        data_tests: [not_null]

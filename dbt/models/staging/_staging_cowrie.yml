@@ -1,0 +1,21 @@
+version: 2
+
+# Kept in its own file so the honeypot's contract reads as one unit.
+# Same rule as the other staging models: event_id uniqueness is a WARNING,
+# because Bronze is at-least-once (see _staging.yml).
+
+models:
+  - name: stg_cowrie
+    description: Cowrie honeypot events, one per Bronze row, with common fields unpacked.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                severity: warn
+      - name: eventid
+        description: Cowrie's event name, e.g. cowrie.login.failed. Every real record has one.
+        data_tests: [not_null]
+      - name: occurred_at
+        data_tests: [not_null]

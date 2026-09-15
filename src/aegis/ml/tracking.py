@@ -41,6 +41,7 @@ from aegis.config import settings
 EXPERIMENT_CAMPAIGNS = "aegis-url-campaigns"
 EXPERIMENT_RANSOMWARE = "aegis-kev-ransomware"
 EXPERIMENT_SEARCH = "aegis-cve-search"
+EXPERIMENT_SESSIONS = "aegis-honeypot-sessions"
 
 
 def tracking_root() -> Path:

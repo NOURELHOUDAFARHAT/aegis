@@ -116,6 +116,18 @@ def key_for(event: Event) -> str:
     nothing to be ordered against.
     """
     payload = event.payload
+
+    # The honeypot's entity is the ATTACK SESSION. Every event in a session must
+    # stay in order - login, then commands, then download, then disconnect - so
+    # all of them share the session id as their key. Checked before the generic
+    # fields below on purpose: a download event also carries a `url`, and keying
+    # it by that URL would send it to a different partition than the rest of its
+    # session, where it could be processed before the login that preceded it.
+    if event.source == Source.COWRIE:
+        session = payload.get("session")
+        if session:
+            return str(session)
+
     for field in ("url", "ip_address", "cve_id", "session_id", "src_ip"):
         value = payload.get(field)
         if value:

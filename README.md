@@ -51,7 +51,7 @@ This is not a compromise made for a small laptop — it is where a large part of
 the data industry moved in 2025–2026, once people measured how much of their
 Spark spend was processing datasets that fit in RAM. The architecture is
 deliberately *portable*: because every storage interaction speaks the S3 API and
-every table is Iceberg, moving to AWS S3 + Athena/EMR in Phase 9 changes
+every table is Iceberg, moving to AWS S3 + Athena/EMR in Phase 10 changes
 configuration, not code.
 
 > **The interview answer this project gives you:** *"I chose single-node compute
@@ -364,6 +364,48 @@ checks that fail if a model decays silently. They share a one-writer
 concurrency pool with dbt, because DuckDB lets only one process write to the
 warehouse at a time. See `docs/adr/0008-machine-learning-on-the-feeds.md`.
 
+### Catch real attacks: the honeypot
+
+Every source above is published by someone else. The honeypot is the first data
+AEGIS observes first-hand: a decoy SSH and Telnet server on an Oracle Cloud
+Always Free VM, running [Cowrie](https://github.com/cowrie/cowrie), which
+records every password guessed, command typed and file fetched.
+
+```powershell
+# once: build the sensor (step-by-step guide in infra/honeypot/README.md)
+cd infra\honeypot\terraform; terraform apply
+
+aegis honeypot files               # log files on the sensor, and how much is collected
+aegis honeypot collect --to kafka  # only what is new since the last run
+aegis lake sync cowrie             # Kafka -> Bronze
+aegis model build                  # -> silver.honeypot_events, silver.honeypot_sessions
+aegis ml sessions                  # sessions that behave unlike the rest, and why
+```
+
+The design assumes the sensor is attacked, because it is:
+
+| Risk | Control |
+|---|---|
+| The VM is used against others | outbound traffic limited to web, NTP and DNS; Cowrie forwarding off |
+| The real SSH is reached | moved to port 22222, open only to your IP, keys only |
+| The collector's key is stolen | it runs one read-only command: no shell, no forwarding |
+| You lock yourself out | Cowrie refuses to start until real SSH is proven to be listening on 22222 |
+| A surprise bill | Terraform refuses any shape or size outside Always Free |
+
+Logs are read **exactly once** even though Cowrie rotates them daily. Files are
+tracked by inode, which survives the rename, and the cursor only moves after
+Kafka has acknowledged every event.
+
+**Status:** the code is complete and verified offline:
+- `terraform validate` passes
+- the first-boot files are rendered and checked for both Telnet settings
+- the log reader passes 18 checks in a real shell
+- the dbt models are tested against synthetic sessions
+
+The sensor itself has not been deployed yet; that needs an Oracle account.
+See `docs/adr/0009-honeypot-sensor-on-oracle-always-free.md`, including the
+list of what can only be verified once the VM exists.
+
 ## Project layout
 
 ```
@@ -372,6 +414,7 @@ aegis/
 ├── pyproject.toml            # dependencies, grouped by the phase that adds them
 ├── infra/
 │   ├── docker-compose.yml    # infrastructure only — app code runs on the host
+│   ├── honeypot/             # Terraform + hardened Cowrie sensor (Oracle Cloud Always Free)
 │   └── docker/postgres-init/ # schemas + ops tables, created on first boot
 ├── src/aegis/
 │   ├── config.py             # typed 12-factor settings, validated once
@@ -401,7 +444,7 @@ aegis/
 | **4** | Modelling: dbt Silver/Gold, data tests, reconciliation | 🟢 **Done** |
 | **5** | Orchestration: Dagster assets, checks, freshness, schedule | 🟢 **Done** |
 | **6** | AI on the feeds: campaign clustering, ransomware scoring, semantic CVE search, MLflow | 🟢 **Done** |
-| 7 | Honeypot: Cowrie sensor, attack sessions, session anomaly detection | ⚪ Next |
+| **7** | Honeypot: Cowrie sensor on Oracle Cloud, attack sessions, session anomaly detection | 🟡 **Built — sensor not yet deployed** |
 | 8 | Product: FastAPI + Next.js real-time dashboard | ⚪ |
 | 9 | Security & governance: PII redaction, RBAC, SAST, audit | ⚪ |
 | 10 | Cloud: Terraform, GitHub Actions, observability, FinOps | ⚪ |
@@ -420,7 +463,7 @@ decided, what the alternatives were, and what it costs.
 The honeypot component only ever records connections made **to infrastructure
 operated by this project**. It is a passive sensor: it never scans, probes or
 attacks any third party. Attacker IP addresses are treated as personal data
-under the GDPR and are pseudonymised in the Silver layer (see Phase 8). All
+under the GDPR and are pseudonymised in the Silver layer (see Phase 9). All
 threat feeds consumed are published for public use under their respective
 licences.
 

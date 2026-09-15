@@ -50,12 +50,30 @@ from dagster import (
 )
 
 from aegis.lakehouse.tables import BRONZE_TABLES
+from aegis.sources.cowrie import is_configured as honeypot_is_configured
 from aegis.sources.feeds import COLLECTORS
+from aegis.sources.models import Source
 from aegis.streaming.topics import topic_for
 
-# Every feed with a collector. The honeypot (cowrie) has a Bronze table but no
-# collector yet, so it is deliberately absent here.
+# Every public feed with a collector.
 SOURCES: list[str] = sorted(COLLECTORS)
+
+HONEYPOT_SOURCE = Source.COWRIE.value
+
+
+def bronze_sources(honeypot_configured: bool) -> list[str]:
+    """Every source with Python ingestion assets: the feeds, plus the honeypot once a sensor exists.
+
+    WHY THE HONEYPOT IS CONDITIONAL
+    Collecting from a sensor that was never built can only fail. In one job,
+    a failed upstream step makes Dagster skip everything downstream of it -
+    including the single dbt step that builds Silver and Gold for EVERY feed.
+    So a missing honeypot would silently stop the whole pipeline. Until
+    AEGIS_HONEYPOT_HOST is set, bronze/cowrie stays what dbt already declares
+    it to be: an external source with no producer.
+    """
+    return [*SOURCES, HONEYPOT_SOURCE] if honeypot_configured else list(SOURCES)
+
 
 # ---------------------------------------------------------------------------
 # Retries: 3 attempts, waiting 30s, then 60s, then 120s.
@@ -195,5 +213,58 @@ def build_bronze_asset(source: str) -> AssetsDefinition:
     return _bronze
 
 
-RAW_ASSETS: list[AssetsDefinition] = [build_raw_asset(s) for s in SOURCES]
-BRONZE_ASSETS: list[AssetsDefinition] = [build_bronze_asset(s) for s in SOURCES]
+def build_honeypot_raw_asset() -> AssetsDefinition:
+    """New honeypot events, read from the sensor over SSH and published to Kafka."""
+
+    @asset(
+        name=HONEYPOT_SOURCE,
+        key_prefix=["raw"],
+        group_name="ingestion",
+        kinds={"python", "ssh", "kafka"},
+        retry_policy=INGESTION_RETRY,
+        description=(
+            "Every Cowrie event recorded since the last run, read from the sensor "
+            "through the read-only aegis-log-reader and published to Kafka. The "
+            "cursor moves only after the broker has acknowledged every event."
+        ),
+        metadata={"kafka_topic": topic_for(HONEYPOT_SOURCE)},
+    )
+    def _raw_honeypot(context: AssetExecutionContext) -> MaterializeResult:
+        from aegis.sources.base import record_run
+        from aegis.sources.cowrie import CowrieCollector, from_settings
+        from aegis.streaming.producer import KafkaSink
+
+        log_source, cursor = from_settings()
+        collector = CowrieCollector(log_source, cursor)
+        sink = KafkaSink(client_id="aegis-dagster-cowrie")
+        result = collector.run(sink)
+        record_run(result)
+
+        if result.status != "success":
+            raise Failure(
+                description=f"Honeypot collection failed: {result.error_message}",
+                metadata={"records_fetched": result.records_fetched},
+            )
+
+        context.log.info(f"cowrie: {result.records_emitted:,} events published")
+        return MaterializeResult(
+            metadata={
+                "records_emitted": result.records_emitted,
+                "records_rejected": result.records_rejected,
+                "dead_lettered": sink.dead_lettered,
+                "bytes_read": result.bytes_downloaded,
+                "duration_seconds": round(result.duration_seconds, 2),
+            }
+        )
+
+    return _raw_honeypot
+
+
+HONEYPOT_CONFIGURED: bool = honeypot_is_configured()
+BRONZE_SOURCES: list[str] = bronze_sources(HONEYPOT_CONFIGURED)
+
+RAW_ASSETS: list[AssetsDefinition] = [
+    *(build_raw_asset(s) for s in SOURCES),
+    *([build_honeypot_raw_asset()] if HONEYPOT_CONFIGURED else []),
+]
+BRONZE_ASSETS: list[AssetsDefinition] = [build_bronze_asset(s) for s in BRONZE_SOURCES]

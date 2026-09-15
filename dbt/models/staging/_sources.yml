@@ -31,3 +31,8 @@ sources:
         description: Botnet command-and-control servers (abuse.ch Feodo Tracker).
       - name: tor_exit
         description: Tor exit-node IP addresses, one snapshot per collection.
+      - name: cowrie
+        description: >
+          Events from the AEGIS honeypot sensor (Cowrie): connections, login
+          attempts, commands and downloads. The only source AEGIS observes
+          first-hand rather than receiving from a publisher.

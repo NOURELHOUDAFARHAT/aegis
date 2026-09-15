@@ -1,0 +1,55 @@
+#cloud-config
+# First boot of the AEGIS honeypot sensor. Rendered by Terraform (compute.tf).
+#
+# cloud-init writes the files below, installs Docker, then runs
+# aegis-bootstrap, which moves real SSH off port 22 and only then starts Cowrie.
+
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - docker-compose-v2
+
+users:
+  - default # 'ubuntu', with the admin key from instance metadata
+  - name: aegis
+    gecos: AEGIS log collector - read-only forced command
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - 'restrict,command="/usr/local/bin/aegis-log-reader" ${reader_public_key}'
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-aegis.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Real SSH for administration and log collection. Port 22 belongs to Cowrie.
+      Port ${admin_ssh_port}
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      AllowUsers ubuntu aegis
+      AllowTcpForwarding no
+      X11Forwarding no
+
+  - path: /usr/local/bin/aegis-log-reader
+    owner: root:root
+    permissions: "0755"
+    content: |
+      ${indent(6, reader_script)}
+
+  - path: /opt/aegis-cowrie/compose.yaml
+    owner: root:root
+    permissions: "0644"
+    content: |
+      ${indent(6, compose_file)}
+
+  - path: /usr/local/sbin/aegis-bootstrap
+    owner: root:root
+    permissions: "0700"
+    content: |
+      ${indent(6, bootstrap_script)}
+
+runcmd:
+  - [/usr/local/sbin/aegis-bootstrap]

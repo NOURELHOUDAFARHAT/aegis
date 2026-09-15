@@ -246,3 +246,91 @@ class TestMachineLearningAssets:
         pools = config["concurrency"]["pools"]
         assert pools["default_limit"] == 1
         assert pools["granularity"] == "op"
+
+
+class TestManifestFreshness:
+    """A stale manifest hides new dbt models from Dagster without any error."""
+
+    @staticmethod
+    def _project(tmp_path: Any) -> tuple[Any, Any]:
+        import os
+
+        (tmp_path / "models").mkdir()
+        (tmp_path / "dbt_project.yml").write_text("name: test\n")
+        model = tmp_path / "models" / "a.sql"
+        model.write_text("select 1")
+        manifest = tmp_path / "target" / "manifest.json"
+        manifest.parent.mkdir()
+        manifest.write_text("{}")
+        for path in (model, tmp_path / "dbt_project.yml"):
+            os.utime(path, (1_000_000, 1_000_000))
+        os.utime(manifest, (2_000_000, 2_000_000))
+        return model, manifest
+
+    def test_missing_manifest_is_stale(self, tmp_path: Any) -> None:
+        from aegis.orchestration.dbt import manifest_is_stale
+
+        assert manifest_is_stale(tmp_path / "target" / "manifest.json", tmp_path)
+
+    def test_manifest_newer_than_every_input_is_fresh(self, tmp_path: Any) -> None:
+        from aegis.orchestration.dbt import manifest_is_stale
+
+        _, manifest = self._project(tmp_path)
+        assert not manifest_is_stale(manifest, tmp_path)
+
+    def test_adding_a_model_makes_it_stale(self, tmp_path: Any) -> None:
+        """Exactly what happened in Phase 7: new models, old manifest."""
+        import os
+
+        from aegis.orchestration.dbt import manifest_is_stale
+
+        _, manifest = self._project(tmp_path)
+        new_model = tmp_path / "models" / "silver" / "b.sql"
+        new_model.parent.mkdir()
+        new_model.write_text("select 2")
+        os.utime(new_model, (3_000_000, 3_000_000))
+        assert manifest_is_stale(manifest, tmp_path)
+
+
+class TestHoneypot:
+    def test_no_sensor_means_no_honeypot_ingestion_assets(self) -> None:
+        """Collecting from a sensor that was never built can only fail - and a
+        failed step would make Dagster skip the dbt step every feed depends on."""
+        from aegis.orchestration.assets import HONEYPOT_SOURCE, bronze_sources
+
+        assert HONEYPOT_SOURCE not in bronze_sources(honeypot_configured=False)
+        assert HONEYPOT_SOURCE in bronze_sources(honeypot_configured=True)
+
+    def test_honeypot_raw_asset_feeds_its_bronze_asset(self) -> None:
+        from aegis.orchestration.assets import build_bronze_asset, build_honeypot_raw_asset
+
+        raw = build_honeypot_raw_asset()
+        bronze = build_bronze_asset("cowrie")
+        assert raw.key == AssetKey(["raw", "cowrie"])
+        assert AssetKey(["raw", "cowrie"]) in {
+            dep.asset_key for dep in bronze.specs_by_key[bronze.key].deps
+        }
+
+    def test_empty_honeypot_warns_instead_of_blocking(self) -> None:
+        """dbt builds everything in one step: blocking on a quiet sensor would stop every feed."""
+        from aegis.orchestration.checks import build_has_rows_check
+
+        honeypot = next(iter(build_has_rows_check("cowrie", blocking=False).check_specs))
+        feed = next(iter(build_has_rows_check("feodo").check_specs))
+        assert honeypot.blocking is False
+        assert feed.blocking is True
+
+    def test_session_model_is_built_from_silver_sessions(self) -> None:
+        from aegis.orchestration.ml_assets import honeypot_session_anomalies
+        from aegis.orchestration.pools import WAREHOUSE_POOL
+
+        key = AssetKey(["ml", "honeypot_session_anomalies"])
+        spec = honeypot_session_anomalies.specs_by_key[key]
+        assert AssetKey(["silver", "honeypot_sessions"]) in {dep.asset_key for dep in spec.deps}
+        assert getattr(honeypot_session_anomalies.node_def, "pool", None) == WAREHOUSE_POOL
+
+    def test_dbt_honeypot_models_read_the_bronze_key(self, defs: Definitions) -> None:
+        assert AssetKey(["bronze", "cowrie"]) in _parents(defs, AssetKey(["staging", "stg_cowrie"]))
+        assert AssetKey(["silver", "honeypot_events"]) in _parents(
+            defs, AssetKey(["silver", "honeypot_sessions"])
+        )

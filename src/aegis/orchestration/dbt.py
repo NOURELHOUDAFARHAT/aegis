@@ -62,14 +62,40 @@ def dbt_executable() -> str:
 DBT_PROJECT = DbtProject(project_dir=DBT_DIR, profiles_dir=DBT_DIR)
 
 
+# Folders `dbt parse` reads to decide which models, tests and sources exist.
+_PROJECT_INPUT_DIRS = ("models", "macros", "tests", "seeds", "snapshots")
+_PROJECT_INPUT_SUFFIXES = {".sql", ".yml", ".yaml", ".csv", ".md"}
+
+
+def manifest_is_stale(manifest: Path, project_dir: Path) -> bool:
+    """True if the manifest is missing, or older than any file dbt would parse.
+
+    WHY NOT JUST "IF MISSING"
+    The first version regenerated the manifest only when it did not exist, so it
+    froze at whatever the project looked like the first time Dagster loaded.
+    Phase 7 added three honeypot models and they were simply absent from the
+    asset graph - no error, no warning - until a test looked for one of them.
+    """
+    if not manifest.exists():
+        return True
+    built_at = manifest.stat().st_mtime
+
+    inputs = [project_dir / "dbt_project.yml"]
+    for folder in _PROJECT_INPUT_DIRS:
+        root = project_dir / folder
+        if root.is_dir():
+            inputs.extend(p for p in root.rglob("*") if p.suffix in _PROJECT_INPUT_SUFFIXES)
+    return any(path.exists() and path.stat().st_mtime > built_at for path in inputs)
+
+
 def ensure_manifest() -> None:
-    """Generate dbt's manifest if it does not exist yet.
+    """Generate dbt's manifest if it is missing or out of date.
 
     The manifest is build output (dbt/target is gitignored), so a fresh clone or
     CI runner has none - and @dbt_assets needs it at import time to know which
     assets exist. Parsing needs no database connection, so this is safe anywhere.
     """
-    if not DBT_PROJECT.manifest_path.exists():
+    if manifest_is_stale(DBT_PROJECT.manifest_path, DBT_DIR):
         run_dbt(["parse"])
 
 

@@ -1,0 +1,70 @@
+#!/bin/bash
+# aegis-bootstrap - first-boot setup of the honeypot sensor.
+# Rendered by Terraform; run once by cloud-init.
+#
+# The order is the safety mechanism. Cowrie takes port 22, which is where real
+# SSH listens when the VM is born. So real SSH must be PROVEN to be listening
+# on the admin port before Cowrie starts. If it is not, this script stops, and
+# the VM stays reachable on 22 instead of locking you out.
+#
+# (Template note: Terraform interpolates dollar-brace sequences, so this script
+# uses $name without braces everywhere except the one template value below.)
+
+set -euo pipefail
+
+ADMIN_PORT=${admin_ssh_port}
+LOG=/var/log/aegis-bootstrap.log
+
+log() { echo "$(date -u +%FT%TZ) aegis-bootstrap: $*" | tee -a "$LOG"; }
+
+# --- 1. Host firewall ---------------------------------------------------------
+# Oracle's Ubuntu images reject everything except port 22 in iptables, on top
+# of the cloud security list. Open the admin port in the saved rules (so it
+# survives reboots) and in the live rules. The saved file is edited directly
+# rather than re-saved, because Docker is already running and a save would
+# persist Docker's own chains too.
+RULES=/etc/iptables/rules.v4
+if [ -f "$RULES" ]; then
+  if ! grep -q -- "--dport $ADMIN_PORT -j ACCEPT" "$RULES"; then
+    sed -i "0,/^-A INPUT -j REJECT/s//-A INPUT -p tcp -m state --state NEW -m tcp --dport $ADMIN_PORT -j ACCEPT\n-A INPUT -j REJECT/" "$RULES"
+    log "admin port $ADMIN_PORT added to $RULES"
+  fi
+else
+  log "no $RULES on this image; skipping host firewall edit"
+fi
+iptables -C INPUT -p tcp -m state --state NEW -m tcp --dport "$ADMIN_PORT" -j ACCEPT 2>/dev/null \
+  || iptables -I INPUT 1 -p tcp -m state --state NEW -m tcp --dport "$ADMIN_PORT" -j ACCEPT
+
+# --- 2. Move real SSH to the admin port ---------------------------------------
+# Ubuntu 24.04 starts sshd through ssh.socket, which listens on 22 regardless
+# of sshd_config. Switching to the plain service makes the Port line in
+# /etc/ssh/sshd_config.d/10-aegis.conf the only thing that decides the port.
+mkdir -p /run/sshd
+sshd -t
+systemctl disable --now ssh.socket 2>/dev/null || true
+systemctl enable ssh.service
+systemctl restart ssh.service
+
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if ss -Hltn "sport = :$ADMIN_PORT" | grep -q .; then
+    break
+  fi
+  sleep 1
+done
+if ! ss -Hltn "sport = :$ADMIN_PORT" | grep -q .; then
+  log "sshd is NOT listening on $ADMIN_PORT. Refusing to start Cowrie on port 22."
+  exit 1
+fi
+if ss -Hltn "sport = :22" | grep -q .; then
+  log "something still listens on port 22. Refusing to start Cowrie."
+  exit 1
+fi
+log "real SSH is listening on $ADMIN_PORT; port 22 is free"
+
+# --- 3. Cowrie ------------------------------------------------------------------
+# The container runs as uid 999. The log directory is owned by it and readable
+# by everyone on the host, which includes the aegis reader account.
+install -d -o 999 -g 999 -m 0755 /var/lib/aegis-cowrie/log
+systemctl enable --now docker
+docker compose -f /opt/aegis-cowrie/compose.yaml up -d
+log "cowrie started"

@@ -173,6 +173,29 @@ class DatabaseSettings(BaseSettings):
         )
 
 
+class HoneypotSettings(BaseSettings):
+    """The Cowrie sensor (Phase 7).
+
+    Fill these from ``terraform output aegis_env`` once the VM exists. Until then
+    ``honeypot_host`` is empty and the honeypot commands say so plainly.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="AEGIS_", env_file=".env", extra="ignore")
+
+    honeypot_host: str = Field(default="", description="The sensor's public IP.")
+    honeypot_port: int = Field(
+        default=22222, description="The real SSH port. Port 22 is the honeypot itself."
+    )
+    honeypot_user: str = Field(
+        default="aegis",
+        description="A read-only account whose key can run aegis-log-reader and nothing else.",
+    )
+    honeypot_key_path: str = Field(
+        default="~/.ssh/aegis_reader",
+        description="Private key for that account. Lives in ~/.ssh, never in the repository.",
+    )
+
+
 class Settings(BaseSettings):
     """The root configuration object. Import ``settings`` from here, nothing else."""
 
@@ -194,6 +217,7 @@ class Settings(BaseSettings):
     kafka: KafkaSettings = Field(default_factory=KafkaSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    honeypot: HoneypotSettings = Field(default_factory=HoneypotSettings)
 
     @property
     def is_local(self) -> bool:

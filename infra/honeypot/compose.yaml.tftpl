@@ -1,0 +1,60 @@
+# Cowrie, hardened. Rendered by Terraform, started by aegis-bootstrap.
+#
+# Starts from Cowrie's own docker/docker-compose.yml (read-only filesystem, no
+# Linux capabilities, no privilege escalation) and adds:
+#   - a pinned image version, so a sensor rebuilt next month is the same sensor
+#   - memory and process limits, so a flood of sessions cannot take the VM down
+#   - configuration overrides (COWRIE_<SECTION>_<KEY>) that close Cowrie's
+#     permissive defaults - see the comments on each one
+#   - the log directory bind-mounted to the host, where the read-only
+#     aegis-log-reader can reach it
+
+name: aegis-cowrie
+
+services:
+  cowrie:
+    image: cowrie/cowrie:3.0.14
+    restart: unless-stopped
+
+    ports:
+      - "22:2222"
+%{ if enable_telnet ~}
+      - "23:2223"
+%{ endif ~}
+
+    environment:
+      # Default is "svr04", a well-known Cowrie fingerprint that scanners check
+      # for. A believable name keeps the sensor from being skipped.
+      COWRIE_HONEYPOT_HOSTNAME: "bkp-files-02"
+      # Default is true: attackers could tunnel connections THROUGH the sensor.
+      # The network firewall blocks most of that too; this is the second layer.
+      COWRIE_SSH_FORWARDING: "false"
+      COWRIE_TELNET_ENABLED: "${enable_telnet ? "true" : "false"}"
+      # Default 0 means unlimited: one attacker could fill the disk with
+      # downloads. 10 MB keeps real samples and refuses abuse.
+      COWRIE_HONEYPOT_DOWNLOAD_LIMIT_SIZE: "10485760"
+
+    volumes:
+      - cowrie-etc:/cowrie/cowrie-git/etc
+      - cowrie-var:/cowrie/cowrie-git/var
+      # Mounted inside the var volume, so only the log directory is shared
+      # with the host and nothing else the image ships in var/ is hidden.
+      - /var/lib/aegis-cowrie/log:/cowrie/cowrie-git/var/log/cowrie
+
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  cowrie-etc:
+  cowrie-var:

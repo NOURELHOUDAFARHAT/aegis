@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+
+region           = "eu-paris-1"                        # your OCI home region
+compartment_ocid = "ocid1.tenancy.oc1..aaaa_REPLACE_ME" # tenancy OCID = root compartment
+
+# Your home IP: https://ifconfig.me, then append /32
+admin_cidr = "203.0.113.7/32"
+
+admin_ssh_public_key_path  = "~/.ssh/aegis_admin.pub"
+reader_ssh_public_key_path = "~/.ssh/aegis_reader.pub"
+
+# Defaults, shown so you know they exist:
+# shape                     = "VM.Standard.A1.Flex"   # or "VM.Standard.E2.1.Micro"
+# ocpus                     = 1
+# memory_gb                 = 6
+# availability_domain_index = 0                       # try 1 or 2 on "Out of capacity"
+# enable_telnet             = true

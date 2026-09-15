@@ -32,7 +32,7 @@ from dagster import (
 )
 
 from aegis.lakehouse.tables import BRONZE_TABLES
-from aegis.orchestration.assets import SOURCES, bronze_key
+from aegis.orchestration.assets import BRONZE_SOURCES, HONEYPOT_SOURCE, bronze_key
 from aegis.streaming.topics import topic_for
 
 
@@ -47,14 +47,19 @@ def bronze_group_id(source: str, suffix: str = "") -> str:
     return f"aegis-bronze-{source}{suffix}"
 
 
-def build_has_rows_check(source: str) -> AssetChecksDefinition:
+def build_has_rows_check(source: str, *, blocking: bool = True) -> AssetChecksDefinition:
     table_name = BRONZE_TABLES[source]
+    consequence = (
+        "Blocks dbt from building on an empty table."
+        if blocking
+        else "Warns only: an empty table here must not stop the other sources."
+    )
 
     @asset_check(
         asset=bronze_key(source),
         name=f"{source}_has_rows",
-        blocking=True,
-        description=f"{table_name} must not be empty. Blocks dbt from building on an empty table.",
+        blocking=blocking,
+        description=f"{table_name} must not be empty. {consequence}",
     )
     def _check(context: AssetCheckExecutionContext) -> AssetCheckResult:
         from aegis.lakehouse.writer import bronze_stats
@@ -63,7 +68,7 @@ def build_has_rows_check(source: str) -> AssetChecksDefinition:
         rows = stats.rows if stats else 0
         return AssetCheckResult(
             passed=rows > 0,
-            severity=AssetCheckSeverity.ERROR,
+            severity=AssetCheckSeverity.ERROR if blocking else AssetCheckSeverity.WARN,
             metadata={
                 "rows": rows,
                 "data_files": stats.files if stats else 0,
@@ -143,9 +148,14 @@ GOLD_ASSETS: list[AssetKey] = [
     AssetKey(["gold", "c2_infrastructure"]),
 ]
 
-FRESHNESS_GOVERNED: list[AssetKey] = [*(bronze_key(s) for s in SOURCES), *GOLD_ASSETS]
+FRESHNESS_GOVERNED: list[AssetKey] = [*(bronze_key(s) for s in BRONZE_SOURCES), *GOLD_ASSETS]
 
+# The honeypot's has_rows check warns instead of blocking. dbt builds every
+# model in ONE step, so a blocking check on bronze/cowrie would stop Silver and
+# Gold for all the public feeds too - over a sensor that simply had a quiet
+# first few hours. An empty feed table means a broken collector; an empty
+# honeypot table can just mean nobody has attacked yet.
 ALL_CHECKS: list[AssetChecksDefinition] = [
-    *(build_has_rows_check(s) for s in SOURCES),
-    *(build_lag_check(s) for s in SOURCES),
+    *(build_has_rows_check(s, blocking=s != HONEYPOT_SOURCE) for s in BRONZE_SOURCES),
+    *(build_lag_check(s) for s in BRONZE_SOURCES),
 ]
