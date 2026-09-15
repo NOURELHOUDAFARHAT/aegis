@@ -324,6 +324,46 @@ the development machine for lack of free memory. See
 `docs/adr/0007-orchestration-as-a-dagster-asset-graph.md`, which also records
 four traps the first build hit.
 
+### Learn from it: machine learning on the feeds
+
+```powershell
+pip install -e ".[ml]"
+aegis ml campaigns                 # group malware servers into campaigns
+aegis ml ransomware                # score exploited CVEs for ransomware resemblance
+aegis ml embed                     # vectors for semantic search (local, no API key)
+aegis ml ask "hackers get past the login page of a VPN box"
+python scripts/eval_search.py      # reproduce the search evaluation
+```
+
+Three models, each answering a question an analyst would ask. Each is
+evaluated honestly and each run is tracked in MLflow:
+
+| Model | Question | Method | Measured result |
+|---|---|---|---|
+| **Campaigns** | Which malware servers are run by the same people? | TF-IDF over paths, tags and ports, then DBSCAN | 66 campaigns; servers in one campaign share a /24 subnet **131x** as often as random pairs |
+| **Ransomware watch list** | Which newly exploited CVEs look like the ones ransomware groups use? | TF-IDF plus logistic regression, **time-split** evaluation | PR-AUC 0.28 on CVEs after 2025, **2.3x** a random ranking |
+| **Semantic search** | Find CVEs described in everyday words | bge-small embeddings on ONNX, cosine similarity | precision@5 **0.46** on paraphrases, against 0.14 for keyword search |
+
+What the evaluations showed:
+
+- **The subnet test is independent evidence.** The clustering never sees IP
+  addresses, yet its campaigns share network ranges. The largest is a Mirai kit
+  on 23 servers serving 350 URLs. Only 9.5% of servers cluster; the rest are
+  left unassigned rather than forced into a group.
+- **A random split flatters the ransomware model.** Shuffled cross-validation
+  scored PR-AUC 0.50; training on the past and testing on the future scores
+  0.28. The label also lags: 23-27% of CVEs from 2021-2024 are
+  ransomware-linked, but only 12.7% from 2025, because CISA adds the flag
+  months later. A recent "false positive" may be a correct early warning.
+- **Hybrid search was measured, then rejected.** Blending keyword and semantic
+  rankings scored 0.23, worse than semantic alone, because on paraphrased
+  questions the keyword ranking is mostly noise.
+
+In Dagster the three models are assets under `ml/`, downstream of Silver, with
+checks that fail if a model decays silently. They share a one-writer
+concurrency pool with dbt, because DuckDB lets only one process write to the
+warehouse at a time. See `docs/adr/0008-machine-learning-on-the-feeds.md`.
+
 ## Project layout
 
 ```
@@ -339,7 +379,8 @@ aegis/
 │   ├── sources/              # ② feed collectors + honeypot reader
 │   ├── streaming/            # ② producers, consumers, schemas, DLQ
 │   ├── lakehouse/            # ③ Iceberg table definitions and writers
-│   ├── ml/                   # ④ features, anomaly detection, RAG
+│   ├── orchestration/        # Dagster assets, checks, jobs, pools
+│   ├── ml/                   # ④ campaigns, ransomware scoring, semantic search, MLflow
 │   └── api/                  # ⑤ FastAPI serving layer
 ├── dbt/                      # ④ silver + gold models, tests, docs
 ├── scripts/doctor.py         # environment diagnostics
@@ -359,10 +400,15 @@ aegis/
 | **3** | Lakehouse: Iceberg Bronze, time travel, partitioning | 🟢 **Done** |
 | **4** | Modelling: dbt Silver/Gold, data tests, reconciliation | 🟢 **Done** |
 | **5** | Orchestration: Dagster assets, checks, freshness, schedule | 🟢 **Done** |
-| 6 | AI: anomaly detection, clustering, MLflow, RAG assistant | ⚪ Next |
-| 7 | Product: FastAPI + Next.js real-time dashboard | ⚪ |
-| 8 | Security & governance: PII redaction, RBAC, SAST, audit | ⚪ |
-| 9 | Cloud: Terraform, GitHub Actions, observability, FinOps | ⚪ |
+| **6** | AI on the feeds: campaign clustering, ransomware scoring, semantic CVE search, MLflow | 🟢 **Done** |
+| 7 | Honeypot: Cowrie sensor, attack sessions, session anomaly detection | ⚪ Next |
+| 8 | Product: FastAPI + Next.js real-time dashboard | ⚪ |
+| 9 | Security & governance: PII redaction, RBAC, SAST, audit | ⚪ |
+| 10 | Cloud: Terraform, GitHub Actions, observability, FinOps | ⚪ |
+
+The honeypot became its own phase. Anomaly detection needs real attack
+sessions to learn from, and a model trained on invented ones would demonstrate
+nothing. Phase 6 applies ML to the feeds already in the lakehouse instead.
 
 ## Architecture decisions
 

@@ -28,6 +28,14 @@ MODELS_JOB = define_asset_job(
     description="Rebuild staging, Silver and Gold from existing Bronze. No collection.",
 )
 
+# Only the ML outputs. For retraining or re-embedding from the Silver tables
+# already held, without collecting feeds or rebuilding dbt models.
+ML_JOB = define_asset_job(
+    name="refresh_ml",
+    selection=AssetSelection.key_prefixes(["ml"]),
+    description="Re-run campaign detection, ransomware scoring and CVE embeddings from Silver.",
+)
+
 # ---------------------------------------------------------------------------
 # Every 6 hours, at 00:00, 06:00, 12:00 and 18:00 UTC.
 #

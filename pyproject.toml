@@ -68,7 +68,11 @@ orchestration = [
     "dagster-postgres==0.29.22",
 ]
 quality       = ["dbt-core~=1.8", "dbt-duckdb~=1.8", "great-expectations~=1.2"]
-ml            = ["scikit-learn~=1.5", "mlflow~=2.18", "sentence-transformers~=3.3", "lancedb~=0.17"]
+# Phase 6. mlflow-SKINNY, not mlflow: tracking only, without the server, UI
+# bundle and pandas stack (~90 MB less). Models are logged as joblib artifacts
+# because skinny's log_model needs pandas. fastembed runs bge-small on ONNX
+# Runtime - no PyTorch. See docs/adr/0008.
+ml            = ["scikit-learn~=1.7.2", "fastembed~=0.8.0", "mlflow-skinny~=3.16.0"]
 api           = ["fastapi~=0.115", "uvicorn[standard]~=0.32", "websockets~=13.1"]
 dev = [
     "pytest~=8.3",

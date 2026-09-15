@@ -24,9 +24,9 @@ from dagster import (
     run_status_sensor,
 )
 
-from aegis.orchestration.jobs import MODELS_JOB, PIPELINE_JOB
+from aegis.orchestration.jobs import ML_JOB, MODELS_JOB, PIPELINE_JOB
 
-MONITORED_JOBS = [PIPELINE_JOB, MODELS_JOB]
+MONITORED_JOBS = [PIPELINE_JOB, MODELS_JOB, ML_JOB]
 
 
 def record_outcome(

@@ -29,6 +29,7 @@ from dagster import AssetExecutionContext, AssetKey
 from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_assets
 
 from aegis.modeling.dbt_runner import DBT_DIR, run_dbt
+from aegis.orchestration.pools import WAREHOUSE_POOL
 
 
 class AegisDbtTranslator(DagsterDbtTranslator):
@@ -79,6 +80,9 @@ ensure_manifest()
     manifest=DBT_PROJECT.manifest_path,
     project=DBT_PROJECT,
     dagster_dbt_translator=AegisDbtTranslator(),
+    # dbt writes the DuckDB warehouse; so do the ML assets. One writer at a
+    # time - see orchestration/pools.py.
+    pool=WAREHOUSE_POOL,
 )
 def aegis_dbt_models(context: AssetExecutionContext, dbt: DbtCliResource) -> Iterator[Any]:
     """Every staging, Silver and Gold model, built and tested by `dbt build`.

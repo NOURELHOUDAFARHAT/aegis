@@ -49,6 +49,21 @@ retention:
       failure: 30
       success: 7
 
+# ----------------------------------------------------------------------------
+# One writer at a time on the DuckDB warehouse.
+#
+# dbt and the three ML assets all write to the same DuckDB file, and DuckDB
+# allows a single writing process per database file. They share the pool
+# `duckdb_warehouse` (aegis/orchestration/pools.py). A pool that is not
+# configured individually gets default_limit, so this caps that pool at one
+# step at a time across all runs - while assets outside any pool, such as
+# collection and the Bronze sync, stay unconstrained.
+# ----------------------------------------------------------------------------
+concurrency:
+  pools:
+    granularity: op
+    default_limit: 1
+
 # Dagster reports anonymous usage statistics by default. A security-telemetry
 # platform should make no outbound calls it does not need.
 telemetry:

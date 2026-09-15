@@ -14,6 +14,8 @@ Usage::
 
 from __future__ import annotations
 
+from typing import Any
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -858,8 +860,6 @@ def orchestrate_run(
         out.add_row(key)
     console.print(out)
 
-    from typing import Any
-
     checks: list[Any] = getattr(result, "get_asset_check_evaluations", lambda: [])()
     if checks:
         failed_checks = [c for c in checks if not c.passed]
@@ -877,6 +877,230 @@ def orchestrate_run(
     if not result.success:
         raise typer.Exit(code=1)
     console.print(f"  [green]{len(materialized)} assets materialised.[/]")
+
+
+# ===========================================================================
+# Phase 6 - machine learning commands
+# ===========================================================================
+
+ml_app = typer.Typer(help="Machine learning on the threat feeds.", no_args_is_help=True)
+app.add_typer(ml_app, name="ml")
+
+
+def _warehouse_connection(read_only: bool = False) -> Any:
+    import duckdb
+
+    from aegis.modeling.dbt_runner import warehouse_path
+
+    path = warehouse_path()
+    if not path.exists():
+        console.print("[yellow]No warehouse yet. Run:  aegis model build[/]")
+        raise typer.Exit(code=1)
+    return duckdb.connect(str(path), read_only=read_only)
+
+
+@ml_app.command("campaigns")
+def ml_campaigns(
+    eps: float = typer.Option(
+        0.35, "--eps", help="Max cosine distance between servers in a campaign."
+    ),
+    min_servers: int = typer.Option(
+        5, "--min-servers", help="Smallest group that counts as a campaign."
+    ),
+    top: int = typer.Option(8, "--top", help="How many campaigns to print."),
+) -> None:
+    """Group URLhaus servers into campaigns by what they serve, and validate against subnets."""
+    from aegis.ml import campaigns
+    from aegis.ml.tracking import EXPERIMENT_CAMPAIGNS, track
+
+    con = _warehouse_connection()
+    try:
+        with track(EXPERIMENT_CAMPAIGNS, "cli") as run:
+            result = campaigns.run(con, eps=eps, min_servers=min_servers)
+            run.params({"eps": eps, "min_servers": min_servers, "features": "paths, tags, ports"})
+            run.metrics(
+                {
+                    "servers": result.servers,
+                    "clustered_servers": result.clustered_servers,
+                    "campaigns": result.campaigns,
+                    "coverage": result.coverage,
+                    "same_subnet_within_campaign": result.coherence.within_rate,
+                    "same_subnet_random_pairs": result.coherence.random_rate,
+                    "subnet_lift": result.coherence.lift,
+                }
+            )
+        rows = con.execute(
+            "SELECT campaign_id, servers, urls, online_urls, distinct_subnets, top_tags, top_paths "
+            "FROM ml.url_campaigns ORDER BY servers DESC LIMIT ?",
+            [top],
+        ).fetchall()
+    finally:
+        con.close()
+
+    out = Table(title="URLhaus campaigns")
+    for column in ("#", "Servers", "URLs", "Online", "/24s", "Top tags", "Top files"):
+        out.add_column(
+            column,
+            justify="right" if column in ("#", "Servers", "URLs", "Online", "/24s") else "left",
+        )
+    for cid, servers, urls, online, subnets, tags, paths in rows:
+        out.add_row(
+            str(cid),
+            str(servers),
+            f"{urls:,}",
+            str(online),
+            str(subnets),
+            ", ".join(tags),
+            ", ".join(paths),
+        )
+    console.print(out)
+
+    coherence = result.coherence
+    lift = (
+        f"{coherence.lift:.1f}x"
+        if coherence.lift is not None
+        else "undefined (random pairs never matched)"
+    )
+    console.print(
+        f"  {result.campaigns} campaigns covering {result.clustered_servers:,} of "
+        f"{result.servers:,} servers ([bold]{result.coverage:.1%}[/])"
+    )
+    console.print(
+        f"  same /24 within a campaign: [bold]{coherence.within_rate:.3f}[/]  vs random pairs: "
+        f"{coherence.random_rate:.3f}  lift: {lift}"
+    )
+
+
+@ml_app.command("ransomware")
+def ml_ransomware(
+    top: int = typer.Option(10, "--top", help="How many watch-list CVEs to print."),
+) -> None:
+    """Score exploited CVEs for resemblance to ransomware favourites; print the watch list."""
+    from aegis.ml import ransomware
+    from aegis.ml.tracking import EXPERIMENT_RANSOMWARE, track
+
+    con = _warehouse_connection()
+    try:
+        with track(EXPERIMENT_RANSOMWARE, "cli") as run:
+            result = ransomware.run(con)
+            ev = result.evaluation
+            run.params(
+                {
+                    "cutoff": ev.cutoff.isoformat(),
+                    "model": "tfidf 1-2 grams + class-balanced logistic regression",
+                    "published_scores": "out-of-fold, 5 folds",
+                }
+            )
+            run.metrics(
+                {
+                    "pr_auc_time_split": ev.pr_auc,
+                    "roc_auc_time_split": ev.roc_auc,
+                    "test_prevalence": ev.test_prevalence,
+                    "lift_over_chance": ev.lift_over_chance,
+                    "n_train": ev.n_train,
+                    "n_test": ev.n_test,
+                    "watchlist_size": result.watchlist_size,
+                }
+            )
+        rows = con.execute(
+            "SELECT watchlist_rank, cve_id, vendor, product, date_added, ransomware_probability "
+            "FROM ml.kev_ransomware_scores WHERE on_watchlist ORDER BY watchlist_rank LIMIT ?",
+            [top],
+        ).fetchall()
+    finally:
+        con.close()
+
+    console.print(
+        f"  time-split evaluation (train before {ev.cutoff}, test after): "
+        f"PR-AUC [bold]{ev.pr_auc:.3f}[/] vs chance {ev.test_prevalence:.3f} "
+        f"([bold]{ev.lift_over_chance:.1f}x[/]), ROC-AUC {ev.roc_auc:.3f}, "
+        f"n_train={ev.n_train:,} n_test={ev.n_test:,}"
+    )
+    out = Table(
+        title="Ransomware watch list: recent CVEs not yet linked, most ransomware-like first"
+    )
+    for column in ("Rank", "CVE", "Vendor", "Product", "Added", "Score"):
+        out.add_column(column)
+    for rank, cve, vendor, product, added, score in rows:
+        out.add_row(str(rank), cve, vendor or "", (product or "")[:34], str(added), f"{score:.2f}")
+    console.print(out)
+    console.print(
+        "  [dim]A watch list to investigate, not a verdict. See ml/ransomware.py on label lag.[/]"
+    )
+
+
+@ml_app.command("embed")
+def ml_embed() -> None:
+    """Embed exploited CVEs for semantic search. Only new or changed CVEs are embedded."""
+    import time
+
+    from aegis.ml import search
+    from aegis.ml.tracking import EXPERIMENT_SEARCH, track
+
+    con = _warehouse_connection()
+    try:
+        with track(EXPERIMENT_SEARCH, "embed") as run:
+            started = time.perf_counter()
+            result = search.refresh_embeddings(con, search.FastEmbedEmbedder())
+            seconds = time.perf_counter() - started
+            run.params({"model": search.MODEL_NAME, "dimensions": search.EMBEDDING_DIM})
+            run.metrics(
+                {
+                    "embedded": result.embedded,
+                    "reused": result.reused,
+                    "removed": result.removed,
+                    "total": result.total,
+                    "seconds": seconds,
+                }
+            )
+    finally:
+        con.close()
+    console.print(
+        f"  embedded [bold]{result.embedded:,}[/], reused {result.reused:,}, "
+        f"removed {result.removed:,} of {result.total:,} CVEs in {seconds:.1f}s"
+    )
+
+
+@ml_app.command("ask")
+def ml_ask(
+    question: str = typer.Argument(..., help='e.g. "Fortinet VPN remote code execution"'),
+    k: int = typer.Option(5, "-k", help="How many CVEs to return."),
+) -> None:
+    """Find the exploited CVEs whose meaning is closest to a question. Runs offline."""
+    from aegis.ml import search
+
+    con = _warehouse_connection(read_only=True)
+    try:
+        row = con.execute(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema = 'ml' AND table_name = 'cve_embeddings'"
+        ).fetchone()
+        has_index = bool(row and row[0])
+        if not has_index:
+            console.print("[yellow]No embeddings yet. Run:  aegis ml embed[/]")
+            raise typer.Exit(code=1)
+        index = search.load_index(con)
+    finally:
+        con.close()
+
+    if len(index) == 0:
+        # The table can exist yet be empty: `aegis ml embed` creates it before
+        # embedding, so an embed that fails midway leaves an empty index behind.
+        # Answering with zero results and exit code 0 reads as "nothing matched"
+        # when the truth is "nothing was searched" - exactly what happened the
+        # first time this command ran against real data.
+        console.print("[yellow]The embedding index is empty. Run:  aegis ml embed[/]")
+        raise typer.Exit(code=1)
+
+    hits = search.search(question, index, search.FastEmbedEmbedder(), k=k)
+    console.print(f"\n  [bold]{question}[/]\n")
+    for hit in hits:
+        console.print(
+            f"  [cyan]{hit.score:.3f}[/]  [bold]{hit.cve_id}[/]  {hit.vendor} / {hit.product}"
+        )
+        console.print(f"         {hit.name}")
+        console.print(f"         [dim]{hit.description[:150]}[/]")
+    console.print("\n  [dim]Ranked evidence to read, not an answer to trust blindly.[/]")
 
 
 if __name__ == "__main__":

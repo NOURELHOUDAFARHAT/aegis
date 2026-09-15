@@ -199,3 +199,50 @@ class TestFreshness:
 
         assert self._as_timedelta(FRESHNESS_POLICY.warn_window) == timedelta(hours=8)
         assert self._as_timedelta(FRESHNESS_POLICY.fail_window) == timedelta(hours=14)
+
+
+class TestMachineLearningAssets:
+    ML_KEYS = (
+        AssetKey(["ml", "url_campaigns"]),
+        AssetKey(["ml", "kev_ransomware_scores"]),
+        AssetKey(["ml", "cve_embeddings"]),
+    )
+
+    def test_ml_assets_are_built_from_silver(self, defs: Definitions) -> None:
+        assert AssetKey(["silver", "urlhaus_urls"]) in _parents(defs, self.ML_KEYS[0])
+        assert AssetKey(["silver", "kev_vulnerabilities"]) in _parents(defs, self.ML_KEYS[1])
+        assert AssetKey(["silver", "kev_vulnerabilities"]) in _parents(defs, self.ML_KEYS[2])
+
+    def test_every_warehouse_writer_shares_the_pool(self, defs: Definitions) -> None:
+        """DuckDB allows one writing process per file. Without the shared pool,
+        the multiprocess executor would start dbt and all three ML assets at once."""
+        from aegis.orchestration.pools import WAREHOUSE_POOL
+
+        writers = [AssetKey(["gold", "vendor_exploitation"]), *self.ML_KEYS]
+        for key in writers:
+            op = defs.resolve_assets_def(key).node_def
+            assert getattr(op, "pool", None) == WAREHOUSE_POOL, (
+                f"{key.to_user_string()} is not in the pool"
+            )
+
+    def test_collection_is_not_throttled_by_the_pool(self, defs: Definitions) -> None:
+        """Only warehouse writers queue; network collection keeps running in parallel."""
+        op = defs.resolve_assets_def(AssetKey(["raw", "urlhaus"])).node_def
+        assert getattr(op, "pool", None) is None
+
+    def test_refresh_ml_job_selects_only_ml_assets(self, defs: Definitions) -> None:
+        from aegis.orchestration.jobs import ML_JOB
+
+        resolve = getattr(defs, "resolve_asset_graph", None) or defs.get_asset_graph
+        selected = ML_JOB.selection.resolve(resolve())
+        assert selected == set(self.ML_KEYS)
+
+    def test_pool_limit_is_one_writer(self) -> None:
+        import yaml
+
+        from aegis.orchestration.home import REPO_DAGSTER_YAML
+
+        config = yaml.safe_load(REPO_DAGSTER_YAML.read_text(encoding="utf-8"))
+        pools = config["concurrency"]["pools"]
+        assert pools["default_limit"] == 1
+        assert pools["granularity"] == "op"

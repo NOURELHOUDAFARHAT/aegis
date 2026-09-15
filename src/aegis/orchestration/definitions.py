@@ -6,8 +6,8 @@ This is the module Dagster loads:
 
 Everything the orchestrator knows about is registered here, and nothing else
 in the codebase needs to know Dagster exists. The collectors, the Bronze
-writer and the dbt project all still run from `aegis collect`, `aegis lake
-sync` and `aegis model build`; Dagster only decides when, and in what order.
+writer, the dbt project and the ML modules all still run from the `aegis` CLI;
+Dagster only decides when, and in what order.
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ from aegis.modeling.dbt_runner import dbt_env
 from aegis.orchestration.assets import BRONZE_ASSETS, RAW_ASSETS
 from aegis.orchestration.checks import ALL_CHECKS, FRESHNESS_GOVERNED, FRESHNESS_POLICY
 from aegis.orchestration.dbt import aegis_dbt_models, dbt_resource
-from aegis.orchestration.jobs import MODELS_JOB, PIPELINE_JOB, PIPELINE_SCHEDULE
+from aegis.orchestration.jobs import ML_JOB, MODELS_JOB, PIPELINE_JOB, PIPELINE_SCHEDULE
+from aegis.orchestration.ml_assets import ML_ASSETS, ML_CHECKS
 from aegis.orchestration.sensors import record_run_failure, record_run_success
 
 # dbt runs as a subprocess and reads its credentials from the environment
@@ -34,9 +35,9 @@ def _with_freshness(spec: AssetSpec) -> AssetSpec:
 
 
 defs = Definitions(
-    assets=[*RAW_ASSETS, *BRONZE_ASSETS, aegis_dbt_models],
-    asset_checks=ALL_CHECKS,
-    jobs=[PIPELINE_JOB, MODELS_JOB],
+    assets=[*RAW_ASSETS, *BRONZE_ASSETS, aegis_dbt_models, *ML_ASSETS],
+    asset_checks=[*ALL_CHECKS, *ML_CHECKS],
+    jobs=[PIPELINE_JOB, MODELS_JOB, ML_JOB],
     schedules=[PIPELINE_SCHEDULE],
     sensors=[record_run_success, record_run_failure],
     resources={"dbt": dbt_resource()},
