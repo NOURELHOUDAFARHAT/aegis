@@ -71,6 +71,33 @@ jobs:
       - name: Unit tests
         run: pytest tests -v --cov=aegis --cov-report=term-missing -m "not integration"
 
+  extras:
+    name: Extras declare what they need
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The `quality` job installs every extra, so it cannot notice that one of
+    # them under-declares its dependencies. This job installs ONLY [ml] and
+    # exercises it. It exists because `ml` forgot alembic: MLflow's SQLite
+    # store needs it, the laptop had it via Dagster, and the gap surfaced
+    # halfway through a deployment instead of here.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install only the ml extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -c requirements/constraints.txt -e ".[ml]" "pytest~=8.3"
+
+      - name: Models, tracking and publishing in that environment
+        run: |
+          pytest -q tests/test_ml.py tests/test_tracking.py tests/test_sessions.py \
+                    tests/test_publish.py tests/test_governance.py
+
   security:
     name: Security scanning
     runs-on: ubuntu-latest

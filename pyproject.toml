@@ -72,7 +72,18 @@ quality       = ["dbt-core~=1.8", "dbt-duckdb~=1.8", "great-expectations~=1.2"]
 # bundle and pandas stack (~90 MB less). Models are logged as joblib artifacts
 # because skinny's log_model needs pandas. fastembed runs bge-small on ONNX
 # Runtime - no PyTorch. See docs/adr/0008.
-ml            = ["scikit-learn~=1.7.2", "fastembed~=0.8.0", "mlflow-skinny~=3.16.0"]
+#
+# alembic is NOT declared by mlflow-skinny, but aegis.ml.tracking points MLflow
+# at a SQLite database, and its SQLAlchemy store runs schema migrations through
+# alembic. This was invisible on the development laptop, where Dagster happens
+# to install alembic: the first clean machine that installed only this extra
+# failed with "No module named 'alembic'" - halfway through a deployment.
+ml            = [
+    "scikit-learn~=1.7.2",
+    "fastembed~=0.8.0",
+    "mlflow-skinny~=3.16.0",
+    "alembic~=1.20",
+]
 api           = ["fastapi~=0.115", "uvicorn[standard]~=0.32", "websockets~=13.1"]
 dev = [
     "pytest~=8.3",
