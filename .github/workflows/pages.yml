@@ -27,6 +27,10 @@ on:
       - "src/aegis/publish/**"
       - "src/aegis/governance/**"
       - "dbt/**"
+      # The stack the bulletin is built on: a change here decides whether the
+      # pipeline can run at all, as a vanished MinIO image proved.
+      - "infra/docker-compose.yml"
+      - "requirements/constraints.txt"
       - ".github/workflows/pages.yml"
 
 # One publish at a time; a newer run waits rather than cancelling a deployment.

@@ -87,7 +87,13 @@ services:
   # is the whole point of building on object storage instead of a local disk.
   # --------------------------------------------------------------------------
   minio:
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    # quay.io, NOT docker.io. MinIO's Docker Hub repository now returns "pull
+    # access denied ... repository does not exist", and quay.io is where the
+    # images are published. This laptop never noticed: it pulled the old
+    # docker.io image once and served it from cache for weeks. The first run on
+    # a clean machine - GitHub Actions - failed immediately, which is precisely
+    # what a clean-machine build is for.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: aegis-minio
     command: server /data --console-address ":9001"
     environment:
@@ -113,7 +119,7 @@ services:
   # Terraform: the environment must be reproducible from an empty machine.
   # --------------------------------------------------------------------------
   minio-init:
-    image: minio/mc:RELEASE.2024-11-05T11-29-45Z
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     container_name: aegis-minio-init
     depends_on:
       minio:
