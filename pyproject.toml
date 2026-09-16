@@ -94,7 +94,9 @@ ml            = [
 ]
 api           = ["fastapi~=0.115", "uvicorn[standard]~=0.32", "websockets~=13.1"]
 dev = [
-    "pytest~=8.3",
+    # 9.0.3+ fixes PYSEC-2026-1845, a /tmp directory-naming weakness on UNIX.
+    # Test-only, but cheap to take, and CI's dependency audit fails on it.
+    "pytest~=9.1",
     "pytest-cov~=6.0",
     "ruff~=0.8",                  # linter + formatter, replaces flake8+black+isort
     "mypy~=1.13",

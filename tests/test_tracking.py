@@ -36,6 +36,46 @@ class TestLocations:
         assert tracking.artifact_root().is_relative_to(isolated_data_dir)
 
 
+class TestRelativeDataDir:
+    """AEGIS_DATA_DIR may be relative. MLflow's artifact location may not be.
+
+    CI sets AEGIS_DATA_DIR=data, and MLflow stores an artifact location as a
+    file:// URI. Path.as_uri() raises on a relative path, which stopped a
+    deployment after the pipeline had already collected, modelled and scored
+    everything. Every other test here uses pytest's absolute tmp_path, so none
+    of them could catch it.
+    """
+
+    def test_locations_are_absolute(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from aegis.config import settings
+        from aegis.ml import tracking
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(settings, "data_dir", "data")
+        assert tracking.tracking_root().is_absolute()
+        assert tracking.artifact_root().is_absolute()
+
+    def test_a_run_completes_with_a_relative_data_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mlflow
+
+        from aegis.config import settings
+        from aegis.ml import tracking
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(settings, "data_dir", "data")
+
+        with tracking.track("aegis-relative-dir", "round-trip") as run:
+            run.metrics({"pr_auc_time_split": 0.282})
+            run_id = run.run_id
+
+        stored = mlflow.get_run(run_id)
+        assert stored.data.metrics["pr_auc_time_split"] == pytest.approx(0.282)
+        assert stored.info.artifact_uri.startswith("file:")
+        assert (tmp_path / "data" / "mlflow").is_dir()
+
+
 class TestRoundTrip:
     def test_a_run_stores_params_metrics_json_and_model(
         self, isolated_data_dir: Path, monkeypatch: pytest.MonkeyPatch

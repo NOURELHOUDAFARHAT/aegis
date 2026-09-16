@@ -45,7 +45,13 @@ EXPERIMENT_SESSIONS = "aegis-honeypot-sessions"
 
 
 def tracking_root() -> Path:
-    return Path(settings.data_dir) / "mlflow"
+    # resolve(), because the data directory may be configured as a RELATIVE
+    # path - CI sets AEGIS_DATA_DIR=data. MLflow records an experiment's
+    # artifact location as a file:// URI, and Path.as_uri() refuses a relative
+    # path with "relative path can't be expressed as a file URI". Every test
+    # used pytest's absolute tmp_path, so the gap only appeared on a machine
+    # configured relatively - halfway through a deployment.
+    return Path(settings.data_dir).resolve() / "mlflow"
 
 
 def tracking_uri() -> str:
