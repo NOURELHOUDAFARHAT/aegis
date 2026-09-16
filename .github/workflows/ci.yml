@@ -109,10 +109,19 @@ jobs:
 
       # Secrets committed at ANY point in history, not just in the diff.
       # v3 runs on Node 24; v2 stopped working when GitHub removed Node 20.
+      # The gitleaks ACTION derives a commit range from the push event, and that
+      # range is unusable twice over: on a repository's first push, and after any
+      # history rewrite, it resolves to the parent of the root commit, which does
+      # not exist. The scan then fails with "unknown revision" having examined
+      # nothing - a red build that means nothing. The CLI scans the whole history
+      # instead: deterministic, and the same result on every kind of push.
       - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v3
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.24.3"
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"             | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+          gitleaks detect --source . --redact -v --exit-code 1
 
       - uses: actions/setup-python@v7
         with:
