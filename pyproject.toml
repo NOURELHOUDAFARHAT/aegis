@@ -50,6 +50,14 @@ dependencies = [
     "pyiceberg[sql-postgres,pyarrow,pyiceberg-core]~=0.8",
     "pyarrow~=18.0",              # columnar in-memory format; Parquet writer
     "duckdb~=1.1",                # embedded OLAP engine = our query layer
+    # duckdb declares NO dependencies of its own, but returning a TIMESTAMP
+    # WITH TIME ZONE value to Python goes through pytz: without it, every such
+    # query raises "Required module 'pytz' failed to import". Honeypot sessions
+    # and the bulletin export both read one. It reached the dev laptop through
+    # dbt-core and Dagster, so the gap only surfaced in an environment that
+    # installs neither. Not `~=`: pytz versions are calendar-based (2026.3), so
+    # a compatible-release pin would forbid next year's.
+    "pytz>=2024.1",
     "polars~=1.15",               # fast DataFrames; the pandas we actually want
     "sqlalchemy~=2.0",            # required by pyiceberg's SqlCatalog
 ]
