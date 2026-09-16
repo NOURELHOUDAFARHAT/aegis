@@ -151,7 +151,11 @@ jobs:
         uses: bridgecrewio/checkov-action@v12.3123.0
         with:
           directory: infra/
-          framework: dockerfile,docker_compose,terraform
+          # Checkov has no `docker_compose` framework - the name was in this
+          # workflow from the start and was never questioned, because CI had
+          # never actually run. It rejects the whole scan with "Invalid
+          # frameworks specified", so the step failed without checking anything.
+          framework: dockerfile,terraform
           soft_fail: true
           output_format: cli
 
