@@ -28,9 +28,11 @@ on:
       - "src/aegis/governance/**"
       - "dbt/**"
       # The stack the bulletin is built on: a change here decides whether the
-      # pipeline can run at all, as a vanished MinIO image proved.
+      # pipeline can run at all, as a vanished MinIO image and an undeclared
+      # alembic both proved.
       - "infra/docker-compose.yml"
       - "requirements/constraints.txt"
+      - "pyproject.toml"
       - ".github/workflows/pages.yml"
 
 # One publish at a time; a newer run waits rather than cancelling a deployment.

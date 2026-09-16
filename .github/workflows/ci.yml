@@ -120,11 +120,15 @@ jobs:
 
       # Known CVEs in our own dependency tree. A data platform's largest attack
       # surface is usually the hundreds of transitive packages it installed.
+      # Auditing the constraints file, not an installed environment: it is the
+      # exact set CI and the daily pipeline install, and it needs no install
+      # step. Auditing the environment also failed on AEGIS itself - --strict
+      # treats "aegis 0.1.0 is not on PyPI" as an error, which is true and
+      # irrelevant, since it is this repository.
       - name: Dependency audit (pip-audit)
         run: |
           pip install pip-audit
-          pip install -c requirements/constraints.txt -e .
-          pip-audit --strict --desc
+          pip-audit --strict --desc -r requirements/constraints.txt
 
       # Insecure infrastructure configuration, caught before it is deployed.
       #
