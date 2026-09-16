@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AEGIS Threat Bulletin</title>
+  <meta name="description" content="A daily bulletin of actively exploited vulnerabilities, malware distribution and botnet infrastructure, rebuilt by the AEGIS threat-intelligence lakehouse.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@500;600;700&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to the bulletin</a>
+
+  <header class="masthead">
+    <div class="wrap">
+      <p class="kicker"><span class="kicker-mark" aria-hidden="true"></span>AEGIS &middot; daily threat bulletin</p>
+      <h1>What attackers are exploiting, distributing and controlling right now</h1>
+      <p class="lede">
+        Rebuilt every morning by a data pipeline that collects four public threat feeds,
+        lands them in an Apache Iceberg lakehouse, models them with dbt and scores them
+        with machine learning. There is no server behind this page: every number is a
+        file the pipeline wrote.
+      </p>
+      <p class="stamp" id="stamp" aria-live="polite">Loading the latest bulletin&hellip;</p>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <section class="figures" id="figures" aria-label="Key figures"></section>
+
+    <section class="panel" id="vendors" aria-labelledby="vendors-h">
+      <header class="panel-head">
+        <p class="panel-tag">CISA Known Exploited Vulnerabilities</p>
+        <h2 id="vendors-h">Whose software is being exploited</h2>
+        <p class="finding" data-finding></p>
+      </header>
+      <div class="legend" aria-hidden="true">
+        <span><i class="swatch swatch-alert"></i>linked to ransomware campaigns</span>
+        <span><i class="swatch swatch-base"></i>other exploited vulnerabilities</span>
+      </div>
+      <div class="chart" data-body></div>
+    </section>
+
+    <section class="panel" id="watchlist" aria-labelledby="watchlist-h">
+      <header class="panel-head">
+        <p class="panel-tag">Machine learning &middot; text classifier</p>
+        <h2 id="watchlist-h">Recently exploited, and resembling ransomware targets</h2>
+        <p class="finding" data-finding></p>
+      </header>
+      <aside class="honesty" data-honesty></aside>
+      <div class="table-scroll" data-body></div>
+    </section>
+
+    <section class="panel" id="malware_tags" aria-labelledby="tags-h">
+      <header class="panel-head">
+        <p class="panel-tag">abuse.ch URLhaus</p>
+        <h2 id="tags-h">What malware is being handed out</h2>
+        <p class="finding" data-finding></p>
+      </header>
+      <div class="table-scroll" data-body></div>
+    </section>
+
+    <section class="panel" id="campaigns" aria-labelledby="campaigns-h">
+      <header class="panel-head">
+        <p class="panel-tag">Machine learning &middot; clustering</p>
+        <h2 id="campaigns-h">Servers that behave like one operation</h2>
+        <p class="finding" data-finding></p>
+      </header>
+      <div class="campaigns" data-body></div>
+    </section>
+
+    <section class="panel" id="c2" aria-labelledby="c2-h">
+      <header class="panel-head">
+        <p class="panel-tag">abuse.ch Feodo Tracker &times; Tor Project</p>
+        <h2 id="c2-h">Who is controlling the botnets</h2>
+        <p class="finding" data-finding></p>
+      </header>
+      <div class="table-scroll" data-body></div>
+    </section>
+
+    <section class="panel" id="honeypot" aria-labelledby="honeypot-h">
+      <header class="panel-head">
+        <p class="panel-tag">First-hand &middot; Cowrie honeypot</p>
+        <h2 id="honeypot-h">Attacks on our own sensor</h2>
+        <p class="finding" data-finding></p>
+      </header>
+      <div data-body></div>
+    </section>
+
+    <section class="panel method" id="method" aria-labelledby="method-h">
+      <header class="panel-head">
+        <p class="panel-tag">How this bulletin is made</p>
+        <h2 id="method-h">From public feed to this page, every morning</h2>
+      </header>
+      <ol class="steps">
+        <li><b>Collect.</b> Four feeds are downloaded and published to Kafka (Redpanda), each record checked against an Avro schema.</li>
+        <li><b>Land.</b> A writer appends them to Apache Iceberg tables in S3-compatible storage, the Bronze layer: raw and never edited.</li>
+        <li><b>Model.</b> dbt builds deduplicated Silver tables and question-shaped Gold tables in DuckDB, with data tests that stop the build on a broken rule.</li>
+        <li><b>Learn.</b> scikit-learn clusters malware servers into campaigns and ranks new vulnerabilities, each model evaluated the way it is used.</li>
+        <li><b>Publish.</b> An allow-listed export writes these files. Honeypot addresses leave only as keyed pseudonyms.</li>
+      </ol>
+      <p class="links">
+        <a href="https://github.com/NOURELHOUDAFARHAT/aegis">Source code</a>
+        <a href="https://github.com/NOURELHOUDAFARHAT/aegis/tree/main/docs/adr">Architecture decisions</a>
+        <a href="https://github.com/NOURELHOUDAFARHAT/aegis/actions/workflows/pages.yml">Pipeline runs</a>
+      </p>
+    </section>
+  </main>
+
+  <footer class="colophon">
+    <div class="wrap">
+      <p>
+        Data: <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog">CISA KEV</a>,
+        <a href="https://urlhaus.abuse.ch/">URLhaus</a> and
+        <a href="https://feodotracker.abuse.ch/">Feodo Tracker</a> by abuse.ch,
+        <a href="https://www.torproject.org/">The Tor Project</a>.
+        Indicators are shown for defence and research. Do not visit listed URLs.
+      </p>
+      <p>Built by <a href="https://nourelhouda-farhat.netlify.app/">Nourelhouda Farhat</a>.</p>
+    </div>
+  </footer>
+
+  <noscript><p class="wrap noscript">This bulletin draws its tables with JavaScript. The raw data is in the <a href="data/summary.json">data folder</a>.</p></noscript>
+</body>
+</html>

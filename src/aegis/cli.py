@@ -1164,6 +1164,60 @@ def ml_sessions(
 
 
 # ===========================================================================
+# Phase 8 - the public bulletin
+# ===========================================================================
+publish_app = typer.Typer(help="Export the public dashboard's data.", no_args_is_help=True)
+app.add_typer(publish_app, name="publish")
+
+
+@publish_app.command("export")
+def publish_export(
+    out: str = typer.Option("site/data", "--out", help="Folder the dashboard reads its JSON from."),
+) -> None:
+    """Write the allow-listed JSON files behind the public bulletin.
+
+    Honeypot data is exported only when AEGIS_PSEUDONYMISATION_KEY is set, and
+    the export refuses to write anything if an attacker address would leak.
+    """
+    import os
+    from pathlib import Path
+
+    from aegis.governance.pseudonymise import PseudonymisationKeyError, load_key
+    from aegis.publish.export import PublishError, export, load_model_metrics
+
+    try:
+        key = load_key()
+    except PseudonymisationKeyError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    con = _warehouse_connection(read_only=True)
+    try:
+        result = export(
+            con,
+            Path(out),
+            key=key,
+            model_metrics=load_model_metrics(),
+            run_url=os.environ.get("AEGIS_PUBLISH_RUN_URL"),
+            commit=os.environ.get("AEGIS_PUBLISH_COMMIT"),
+        )
+    except PublishError as exc:
+        console.print(f"[red]Nothing published:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        con.close()
+
+    table = Table(title=f"Bulletin files in {out}")
+    table.add_column("File", style="cyan")
+    table.add_column("Size", justify="right")
+    for name, size in result.files.items():
+        table.add_row(name, f"{size / 1024:,.1f} KB")
+    console.print(table)
+    if not result.honeypot_available:
+        console.print("[dim]No honeypot sessions yet: the bulletin shows the sensor as pending.[/]")
+
+
+# ===========================================================================
 # Phase 7 - the honeypot
 # ===========================================================================
 honeypot_app = typer.Typer(

