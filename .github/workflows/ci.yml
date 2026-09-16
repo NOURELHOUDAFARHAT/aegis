@@ -108,7 +108,6 @@ jobs:
           fetch-depth: 0        # gitleaks needs full history to scan every commit
 
       # Secrets committed at ANY point in history, not just in the diff.
-      # v3 runs on Node 24; v2 stopped working when GitHub removed Node 20.
       # The gitleaks ACTION derives a commit range from the push event, and that
       # range is unusable twice over: on a repository's first push, and after any
       # history rewrite, it resolves to the parent of the root commit, which does
@@ -119,7 +118,8 @@ jobs:
         env:
           GITLEAKS_VERSION: "8.24.3"
         run: |
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"             | sudo tar -xz -C /usr/local/bin gitleaks
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" |
+            sudo tar -xz -C /usr/local/bin gitleaks
           gitleaks version
           gitleaks detect --source . --redact -v --exit-code 1
 
